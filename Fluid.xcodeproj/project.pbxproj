@@ -1321,8 +1321,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/altic-dev/DynamicNotchKit.git";
 			requirement = {
-				branch = main;
-				kind = branch;
+				revision = 50dc8565469cc80bbbe3c0d5dd902585a2d67986;
+				kind = revision;
 			};
 		};
 		7C5AF1492F15041600DE21B0 /* XCRemoteSwiftPackageReference "mediaremote-adapter" */ = {
