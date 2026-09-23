@@ -3221,6 +3221,32 @@ final class AudioBudgetMeasurementGateTests: XCTestCase {
 
 @MainActor
 final class SimpleUpdaterTests: XCTestCase {
+    func testInstallStatusClosesWithoutTerminatingTheOldApp() throws {
+        let updater = SimpleUpdater()
+        let version = "status-test-\(UUID().uuidString)"
+        updater.showUpdateInstallStatus(version: version)
+        defer { updater.dismissUpdateInstallStatus() }
+        let window = try XCTUnwrap(NSApplication.shared.windows.first {
+            $0.title == "Installing FluidVoice \(version)"
+        })
+        XCTAssertTrue(window.isVisible)
+
+        // The updater closes its window after the file swap, before asking AppKit to
+        // relaunch/quit. The old process intentionally stays alive throughout this test.
+        updater.dismissUpdateInstallStatus()
+        XCTAssertFalse(window.isVisible)
+        updater.dismissUpdateInstallStatus()
+        XCTAssertFalse(window.isVisible)
+
+        updater.showUpdateInstallStatus(version: version)
+        let replacement = try XCTUnwrap(NSApplication.shared.windows.first {
+            $0.title == "Installing FluidVoice \(version)" && $0.isVisible
+        })
+        XCTAssertFalse(replacement === window)
+        updater.dismissUpdateInstallStatus()
+        XCTAssertFalse(replacement.isVisible)
+    }
+
     func testUpdateOperationGateAllowsOnlyOneActiveInstall() {
         var gate = UpdateOperationGate()
 
