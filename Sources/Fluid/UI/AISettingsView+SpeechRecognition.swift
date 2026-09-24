@@ -494,7 +494,6 @@ extension VoiceEngineSettingsView {
                 }
             } label: { Label(self.settings.selectedCohereLanguage.displayName, systemImage: "globe") }
                 .fluidDropdownStyle()
-                .buttonStyle(.plain)
         } else if model == .nemotronOffline || model == .nemotronStreaming || model == .nemotronStreaming320 {
             self.nemotronLanguagePickerButton
         }

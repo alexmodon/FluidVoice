@@ -35,11 +35,10 @@ struct MeetingSummaryView: View {
             if self.controller.model != nil {
                 HStack(spacing: self.theme.metrics.spacing.sm) {
                     if self.controller.installed {
-                        Picker("Summary type", selection: self.$kind) {
+                        FluidDropdownPicker("Summary type", selectedTitle: self.kind.title, selection: self.$kind) {
                             ForEach(MeetingSummaryKind.allCases) { kind in Text(kind.title).tag(kind) }
                         }
                         .labelsHidden()
-                        .pickerStyle(.menu)
                         .fluidDropdownStyle()
                         .fixedSize()
                         .disabled(self.controller.busy)
