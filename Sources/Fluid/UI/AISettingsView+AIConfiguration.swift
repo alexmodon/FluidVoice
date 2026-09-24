@@ -673,7 +673,7 @@ extension AIEnhancementSettingsView {
     private var privateAIRuntimeSection: some View {
         let model = self.privateAIController.selectedPrivateAIModel
         let status = self.privateAIModelStatus(for: model)
-        let isInstalled = PrivateAIIntegrationService.isModelInstalled(model)
+        let isInstalled = !self.privateAIController.privateAILoadState.needsDownload(model.id) && PrivateAIIntegrationService.isModelInstalled(model)
         let isDownloading = self.privateAIController.privateAILoadState.isDownloading(model.id)
         let downloadProgress = self.privateAIController.privateAILoadState.downloadProgress(for: model.id)
         let isLoading = self.privateAIController.privateAILoadState.isLoading(model.id)
@@ -1026,6 +1026,13 @@ extension AIEnhancementSettingsView {
             return PrivateAIProviderModelStatus(
                 detail: "For dictation only.",
                 color: Color.fluidGreen
+            )
+        }
+
+        if self.privateAIController.privateAILoadState.needsDownload(model.id) {
+            return PrivateAIProviderModelStatus(
+                detail: "Model files are missing. Download again to repair.",
+                color: self.theme.palette.secondaryText
             )
         }
 
@@ -1446,7 +1453,7 @@ extension AIEnhancementSettingsView {
             : primaryPromptSelection == .default && item.id == self.settings.selectedProviderID
         let fluidModel = self.privateAIController.selectedPrivateAIModel
         let fluidStatus = self.privateAIModelStatus(for: fluidModel)
-        let isFluidInstalled = PrivateAIIntegrationService.isModelInstalled(fluidModel)
+        let isFluidInstalled = !self.privateAIController.privateAILoadState.needsDownload(fluidModel.id) && PrivateAIIntegrationService.isModelInstalled(fluidModel)
         let isFluidDownloading = self.privateAIController.privateAILoadState.isDownloading(fluidModel.id)
         let fluidDownloadProgress = self.privateAIController.privateAILoadState.downloadProgress(for: fluidModel.id)
         let isFluidLoading = self.privateAIController.privateAILoadState.isLoading(fluidModel.id)
