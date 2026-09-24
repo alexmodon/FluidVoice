@@ -163,7 +163,8 @@ struct MeetingTranscriptionView: View {
     @State private var pendingDeleteSessionID: MeetingSessionID?
     @State private var pendingDeleteAudioSessionID: MeetingSessionID?
     @State private var draftMeetingAudioRetentionPolicy = SettingsStore.shared.meetingAudioRetentionPolicy
-    @AppStorage("MeetingHistoryInspectorVisible") private var isMeetingHistoryVisible = true
+    // Reopen history on each visit; narrow-window selection must not hide it permanently.
+    @State private var isMeetingHistoryVisible = true
 
     init(
         coordinator: MeetingSessionCoordinator,
@@ -1342,9 +1343,7 @@ struct MeetingTranscriptionCanvas: View {
                     recentSession: recentSession,
                     onStart: self.onStart,
                     onRepairSetup: self.onRepairSetup,
-                    onEditSetup: self.onEditSetup ?? self.onRepairSetup,
-                    summaryASRService: self.summaryASRService,
-                    isQuiescent: self.isQuiescent
+                    onEditSetup: self.onEditSetup ?? self.onRepairSetup
                 )
             case let .recording(session, trackHealth, liveTranscript):
                 MeetingRecordingCanvas(
@@ -1954,8 +1953,6 @@ private struct MeetingSetupCanvas: View {
     let onStart: () -> Void
     let onRepairSetup: () -> Void
     let onEditSetup: () -> Void
-    var summaryASRService: ASRService? = nil
-    var isQuiescent = true
 
     @Environment(\.theme) private var theme
     @State private var documentSection = MeetingDocumentSection.transcript
@@ -2025,7 +2022,17 @@ private struct MeetingSetupCanvas: View {
             MeetingDocumentTabs(selection: self.$documentSection, primaryTitle: "Meeting home", primaryIcon: "house", isEnabled: !self.isStarting)
 
             if self.documentSection == .summary {
-                MeetingSummaryView(asrService: self.summaryASRService, isQuiescent: self.isQuiescent)
+                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
+                    Text("Choose a meeting to summarize")
+                        .font(self.theme.typography.bodyStrong)
+                        .foregroundStyle(self.theme.palette.primaryText)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Select a completed meeting from meeting history, then open Meet Summary. New meetings can be summarized after transcription finishes.")
+                        .font(self.theme.typography.body)
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, self.theme.metrics.spacing.md)
             } else {
                 self.recordingSetup
             }
