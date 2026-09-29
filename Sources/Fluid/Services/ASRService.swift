@@ -2638,9 +2638,10 @@ final class ASRService: ObservableObject {
     @discardableResult
     func start(
         forDictionaryTraining: Bool = false,
+        requiresPronunciation: Bool = true,
         onCaptureStarted: (@MainActor () -> Void)? = nil
     ) async -> AudioCaptureStartOutcome {
-        guard !forDictionaryTraining || DictionaryMatcherExperiment.sharedFeaturesEnabled else { return .failed }
+        guard !forDictionaryTraining || !requiresPronunciation || DictionaryMatcherExperiment.sharedFeaturesEnabled else { return .failed }
         DebugLogger.shared.info("🎤 START() called - beginning recording session", source: "ASRService")
 
         guard self.micStatus == .authorized else {
@@ -2673,8 +2674,9 @@ final class ASRService: ObservableObject {
         self.audioCaptureStartGeneration &+= 1
         let startGeneration = self.audioCaptureStartGeneration
         self.isStarting = true
-        self.isPronunciationTrainingStart = forDictionaryTraining
-        self.pronunciationTrainingStartGeneration = forDictionaryTraining ? DictionaryMatcherExperiment.generation : nil
+        // Spelling-only training owns the same isolated capture, without requiring voice matching.
+        self.isPronunciationTrainingStart = forDictionaryTraining && requiresPronunciation
+        self.pronunciationTrainingStartGeneration = self.isPronunciationTrainingStart ? DictionaryMatcherExperiment.generation : nil
         defer {
             self.pronunciationTrainingStartGeneration = nil
             self.isPronunciationTrainingStart = false

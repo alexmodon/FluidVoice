@@ -4221,10 +4221,9 @@ extension DictationE2ETests {
         let disabled = try await provider.transcribeFinal(pcm)
         XCTAssertEqual(disabled.text, baseline.text, "Off must preserve ordinary recognition despite saved profiles")
         XCTAssertNil(disabled.dictionaryLearningAlignment, "Off must not retain pronunciation learning alignment")
-        do {
-            _ = try await provider.transcribeDictionaryTraining(pcm, capturePronunciation: true)
-            XCTFail("Off must reject voice enrollment")
-        } catch is CancellationError {}
+        let spellingOnly = try await provider.transcribeDictionaryTraining(pcm, capturePronunciation: true)
+        XCTAssertFalse(spellingOnly.text.isEmpty, "Off must still transcribe spelling examples")
+        XCTAssertNil(spellingOnly.pronunciationEnrollment, "Off must reject voice enrollment")
         for key in keys {
             UserDefaults.standard.set(false, forKey: key)
         }

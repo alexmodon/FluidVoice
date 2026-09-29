@@ -596,7 +596,7 @@ final class FluidAudioProvider: TranscriptionProvider {
     }
 
     func transcribeDictionaryTraining(_ samples: [Float], capturePronunciation: Bool) async throws -> ASRTranscriptionResult {
-        guard DictionaryMatcherExperiment.sharedFeaturesEnabled else { throw CancellationError() }
+        let pronunciationGeneration = DictionaryMatcherExperiment.generation
         guard let manager = self.streamingAsrManager else {
             throw NSError(
                 domain: "FluidAudioProvider",
@@ -610,14 +610,18 @@ final class FluidAudioProvider: TranscriptionProvider {
             let result = try await manager.transcribe(samples, source: AudioSource.microphone)
             let features = await manager.consumePronunciationEncoderFeatures()
             await manager.setPronunciationCustomizationEnabled(false)
-            guard DictionaryMatcherExperiment.sharedFeaturesEnabled else { throw CancellationError() }
-            var capture = shouldCapture ? self.makeEnrollment(result: result, features: features, samples: samples) : nil
+            let captureIsCurrent = shouldCapture && DictionaryMatcherExperiment.sharedFeaturesEnabled
+                && DictionaryMatcherExperiment.generation == pronunciationGeneration
+            var capture = captureIsCurrent ? self.makeEnrollment(result: result, features: features, samples: samples) : nil
             if capture != nil, DictionaryPronunciationExperiment.enabled,
                let range = DictionaryPronunciationExperiment.trimmedRange(samples)
             {
                 let embedding = try await self.encodeEdge(Array(samples[range]), manager: manager)
                 capture?.edgeEmbedding = embedding.values
                 capture?.edgeFrameCount = embedding.sourceFrameCount
+            }
+            if !DictionaryMatcherExperiment.sharedFeaturesEnabled || DictionaryMatcherExperiment.generation != pronunciationGeneration {
+                capture = nil
             }
             return ASRTranscriptionResult(text: result.text, confidence: result.confidence, pronunciationEnrollment: capture)
         } catch {
