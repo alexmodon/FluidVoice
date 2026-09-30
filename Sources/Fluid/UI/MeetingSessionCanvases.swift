@@ -344,6 +344,7 @@ struct MeetingResultCanvas: View {
     let isQuiescent: Bool
     let canUndo: Bool
     @State private var showsProbableEchoes = false
+    @StateObject private var playback = MeetingSegmentPlayback()
     let onCopyTranscript: (MeetingSession, Bool) -> Void
     let onExportTranscript: (MeetingSession, MeetingTranscriptExportFormat, Bool) -> Void
     let onReassignSegment: (MeetingTranscriptSegmentID, SessionSpeakerID) -> Void
@@ -449,6 +450,11 @@ struct MeetingResultCanvas: View {
                         }
                     }
 
+                    if let errorMessage = self.playback.errorMessage {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .font(self.theme.typography.caption)
+                            .foregroundStyle(self.theme.palette.warning)
+                    }
                     if visibleSegments.isEmpty {
                         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
                             Text("No transcript text")
@@ -481,10 +487,14 @@ struct MeetingResultCanvas: View {
                                         }
                                     },
                                     isLocalUser: row.isLocal,
-                                    showsSpeakerLabel: row.showsLabel,
                                     reassignTargets: activeSpeakers.filter { $0.id != row.segment.speakerID },
                                     isQuiescent: self.isQuiescent,
-                                    onReassign: { speakerID in self.onReassignSegment(row.segment.id, speakerID) }
+                                    onReassign: { speakerID in self.onReassignSegment(row.segment.id, speakerID) },
+                                    canPlayAudio: self.session.retention.audioDeletedAt == nil && self.session.hasFinalizedAudio && self.isQuiescent,
+                                    isAudioExpanded: self.playback.activeSegmentID == row.segment.id,
+                                    playback: self.playback,
+                                    isLoadingAudio: self.playback.activeSegmentID == row.segment.id && self.playback.isLoading,
+                                    onPlayAudio: { self.playback.toggle(sessionID: self.session.id, segmentID: row.segment.id) }
                                 )
                             }
                         }
@@ -496,6 +506,12 @@ struct MeetingResultCanvas: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .id(self.session.id)
+        .onDisappear { self.playback.stop() }
+        .onChange(of: self.session.id) { _, _ in self.playback.stop() }
+        .onChange(of: self.session.retention.audioDeletedAt) { _, _ in self.playback.stop() }
+        .onChange(of: self.isQuiescent) { _, value in if !value { self.playback.stop() } }
+        .onChange(of: self.documentSection) { _, _ in self.playback.stop() }
+        .onChange(of: self.showsProbableEchoes) { _, _ in self.playback.stop() }
         .task(id: self.copyRevision) {
             guard self.copied else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -1021,10 +1037,14 @@ private struct MeetingTranscriptSegmentRow: View {
     let speakerTint: Color?
     let onRenameSpeakerTapped: (() -> Void)?
     let isLocalUser: Bool
-    let showsSpeakerLabel: Bool
     let reassignTargets: [MeetingSessionSpeaker]
     let isQuiescent: Bool
     let onReassign: (SessionSpeakerID) -> Void
+    let canPlayAudio: Bool
+    let isAudioExpanded: Bool
+    let playback: MeetingSegmentPlayback
+    let isLoadingAudio: Bool
+    let onPlayAudio: () -> Void
 
     @Environment(\.theme) private var theme
 
@@ -1034,9 +1054,23 @@ private struct MeetingTranscriptSegmentRow: View {
                 .font(self.theme.typography.codeCaption)
                 .foregroundStyle(self.theme.palette.secondaryText)
                 .frame(width: 58, alignment: .leading)
-                .padding(.top, 2)
+                .frame(height: 28)
             VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
-                if self.showsSpeakerLabel { self.speakerLabel }
+                HStack(spacing: self.theme.metrics.spacing.sm) {
+                    self.speakerLabel
+                    Spacer(minLength: self.theme.metrics.spacing.md)
+                    Button {
+                        if self.isAudioExpanded { self.playback.stop() } else { self.onPlayAudio() }
+                    } label: {
+                        Label(self.isAudioExpanded ? "Close" : "Audio", systemImage: self.isAudioExpanded ? "xmark" : "play.fill")
+                            .frame(minWidth: 54)
+                    }
+                    .fluidGlassAction()
+                    .disabled(!self.canPlayAudio && !self.isAudioExpanded)
+                    .help(self.isAudioExpanded ? "Close audio player" : (self.canPlayAudio ? "Play this speaker chunk" : "Audio unavailable"))
+                    .accessibilityLabel(self.isAudioExpanded ? "Close audio player" : "Play audio chunk for \(self.speakerName)")
+                }
+                .frame(minHeight: 28)
                 Text(self.segment.text)
                     .font(self.theme.typography.body)
                     .foregroundStyle(self.theme.palette.primaryText)
@@ -1045,6 +1079,11 @@ private struct MeetingTranscriptSegmentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if self.segment.isEcho {
                     Text("Probable echo").font(self.theme.typography.caption).foregroundStyle(.secondary)
+                }
+                if self.isAudioExpanded {
+                    MeetingSegmentAudioPlayer(playback: self.playback, isLoading: self.isLoadingAudio)
+                        .frame(maxWidth: 360)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
@@ -1059,7 +1098,7 @@ private struct MeetingTranscriptSegmentRow: View {
             }
             .disabled(!self.isQuiescent || self.reassignTargets.isEmpty)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(
             "\(MeetingTranscriptExporter.timestampText(self.segment.start.seconds)), \(self.speakerName), \(self.segment.text)"
         )
