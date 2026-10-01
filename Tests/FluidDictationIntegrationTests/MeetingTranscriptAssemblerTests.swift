@@ -550,8 +550,11 @@ final class MeetingTranscriptAssemblerTests: XCTestCase {
         let (plan, manifest, span) = try self.onlineMicFixture(drift: drift)
         let unit = self.unit(id: "playback", span: span, analysisStart: 1, analysisEnd: 2)
         let result = try MeetingTranscriptAssembler().assemble(MeetingAssemblyInput(
-            plan: plan, manifest: manifest, evidence: self.evidence(plan: plan, units: [unit]),
-            coverageReceipts: self.receipts(for: manifest), echoVerdicts: ["playback": .notEcho]
+            plan: plan,
+            manifest: manifest,
+            evidence: self.evidence(plan: plan, units: [unit]),
+            coverageReceipts: self.receipts(for: manifest),
+            echoVerdicts: ["playback": .notEcho]
         ))
         let segment = try XCTUnwrap(result.segments.first)
         let original = segment

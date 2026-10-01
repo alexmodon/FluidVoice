@@ -999,6 +999,11 @@ final class ASRService: ObservableObject {
     private var modelDownloadAnalyticsStates: [UUID: ModelDownloadAnalyticsState] = [:]
     private var modelExistenceCheckID: UUID?
 
+    @Published private(set) var deletingModelID: String?
+    #if DEBUG
+    var modelProvidersForTesting: [SettingsStore.SpeechModel: TranscriptionProvider] = [:]
+    #endif
+
     var hasActiveModelPreparation: Bool {
         self.ensureReadyTask != nil
     }
@@ -1093,6 +1098,9 @@ final class ASRService: ObservableObject {
     /// Uses the new SettingsStore.selectedSpeechModel instead of old TranscriptionProviderOption.
     private var transcriptionProvider: TranscriptionProvider {
         let model = SettingsStore.shared.selectedSpeechModel
+        #if DEBUG
+        if let injected = self.modelProvidersForTesting[model] { return injected }
+        #endif
 
         switch model {
         case .appleSpeechAnalyzer:
@@ -1224,6 +1232,9 @@ final class ASRService: ObservableObject {
     /// Gets a provider for a specific model (without changing the active selection)
     /// Used for downloading models without switching the active model.
     private func getProvider(for model: SettingsStore.SpeechModel) -> TranscriptionProvider {
+        #if DEBUG
+        if let injected = self.modelProvidersForTesting[model] { return injected }
+        #endif
         switch model {
         case .appleSpeechAnalyzer:
             if #available(macOS 26.0, *) {
@@ -1265,7 +1276,7 @@ final class ASRService: ObservableObject {
         if self.isMeetingASRPreparationClaimed {
             throw MeetingASRPreparationError.preparationInProgress
         }
-        guard self.modelDownloadTask == nil, self.ensureReadyTask == nil else {
+        guard self.deletingModelID == nil, self.modelDownloadTask == nil, self.ensureReadyTask == nil else {
             throw NSError(
                 domain: "ASRService",
                 code: -2001,
@@ -6261,7 +6272,7 @@ final class ASRService: ObservableObject {
         )
         defer { self.meetingModelResidency.endOperation(admission) }
         try self.requireStreamingProviderAvailable()
-        guard self.modelDownloadTask == nil else {
+        guard self.deletingModelID == nil, self.modelDownloadTask == nil else {
             throw NSError(
                 domain: "ASRService",
                 code: -2001,
@@ -6309,7 +6320,7 @@ final class ASRService: ObservableObject {
             }
         }
 
-        guard SettingsStore.shared.selectedSpeechModel == model else {
+        guard self.deletingModelID == nil, SettingsStore.shared.selectedSpeechModel == model else {
             throw CancellationError()
         }
 
@@ -6741,36 +6752,55 @@ final class ASRService: ObservableObject {
     // MARK: - Cache management
 
     func clearModelCache() async throws {
-        try self.requireStreamingProviderAvailable()
-        let activityLease = try self.acquireExclusiveActivity(.modelMaintenance)
-        defer { self.releaseExclusiveActivity(activityLease) }
-        DebugLogger.shared.debug("Clearing model cache via transcription provider", source: "ASRService")
-        self.streamingWorkState.invalidateProvider()
-        self.isAsrReady = false
-        await self.transcriptionExecutor.cancelAndAwaitPending()
-        try await self.transcriptionProvider.clearCache()
-        self.modelsExistOnDisk = false
+        try await self.clearModelCache(for: SettingsStore.shared.selectedSpeechModel)
     }
 
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
         try self.requireStreamingProviderAvailable()
+        guard self.deletingModelID == nil, !self.hasActiveModelDownload, !self.hasActiveModelPreparation,
+              !self.isMeetingASRPreparationClaimed
+        else {
+            throw NSError(domain: "ASRService", code: -2001, userInfo: [
+                NSLocalizedDescriptionKey: "Another model operation is already in progress. Try deleting again when it finishes.",
+            ])
+        }
+        guard !model.usesAppleLogo, model != .qwen3Asr else {
+            throw NSError(domain: "ASRService", code: -2003, userInfo: [
+                NSLocalizedDescriptionKey: "This model cannot be deleted from FluidVoice.",
+            ])
+        }
         let activityLease = try self.acquireExclusiveActivity(.modelMaintenance)
-        defer { self.releaseExclusiveActivity(activityLease) }
+        self.deletingModelID = model.id
+        let isActive = SettingsStore.shared.selectedSpeechModel == model
+        defer {
+            self.deletingModelID = nil
+            self.releaseExclusiveActivity(activityLease)
+        }
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
-        if SettingsStore.shared.selectedSpeechModel == model {
+        let provider = isActive ? self.transcriptionProvider : self.cachedDeletionProvider(for: model)
+        if isActive {
             self.streamingWorkState.invalidateProvider()
             self.isAsrReady = false
+            self.providerResetPending = true
             await self.transcriptionExecutor.cancelAndAwaitPending()
         }
-        let provider = self.getProvider(for: model)
+        try Task.checkCancellation()
+        guard !isActive || SettingsStore.shared.selectedSpeechModel == model else { throw CancellationError() }
         try await provider.clearCache()
-
         if model.requiresExternalArtifacts {
             SettingsStore.shared.setExternalCoreMLArtifactsDirectory(nil, for: model)
         }
+        if isActive { self.modelsExistOnDisk = false }
+    }
 
-        guard SettingsStore.shared.selectedSpeechModel == model else { return }
-        self.providerResetPending = true
+    private func cachedDeletionProvider(for model: SettingsStore.SpeechModel) -> TranscriptionProvider {
+        // Nemotron keeps providers for both modes; retire the target's existing instance.
+        if model == .nemotronOffline || model == .nemotronStreaming || model == .nemotronStreaming320,
+           let cached = self.nemotronProviders[model.nemotronProviderMode]
+        {
+            return cached
+        }
+        return self.getProvider(for: model)
     }
 
     // MARK: - Timer-based Streaming Transcription (No VAD)

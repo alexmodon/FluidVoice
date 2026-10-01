@@ -29,12 +29,28 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
             for scheme in [ColorScheme.light, .dark] {
                 let progress = DictionaryTrainingProgress(spellingCount: 3, pronunciationCount: 1, pronunciationEnabled: true)
                 let view = DictionaryWordWizard(
-                    word: .constant("Palermo"), step: .review, count: 3, heard: "pal ermo", variants: ["pal ermo"],
-                    busy: false, recording: false, processing: false, starting: false, error: nil,
-                    voiceSupported: true, alreadyCorrect: false, savedWord: "",
-                    onContinue: { actions += 1 }, onRecord: { actions += 1 }, onSave: { actions += 1 },
-                    onBack: { actions += 1 }, onNewWord: { actions += 1 }, onManual: { actions += 1 },
-                    onPracticeMore: { actions += 1 }, pronunciationNotice: progress.pronunciationNotice, pronunciationIncomplete: true
+                    word: .constant("Palermo"),
+                    step: .review,
+                    count: 3,
+                    heard: "pal ermo",
+                    variants: ["pal ermo"],
+                    busy: false,
+                    recording: false,
+                    processing: false,
+                    starting: false,
+                    error: nil,
+                    voiceSupported: true,
+                    alreadyCorrect: false,
+                    savedWord: "",
+                    onContinue: { actions += 1 },
+                    onRecord: { actions += 1 },
+                    onSave: { actions += 1 },
+                    onBack: { actions += 1 },
+                    onNewWord: { actions += 1 },
+                    onManual: { actions += 1 },
+                    onPracticeMore: { actions += 1 },
+                    pronunciationNotice: progress.pronunciationNotice,
+                    pronunciationIncomplete: true
                 )
                 .padding(20).frame(width: width)
                 .background(scheme == .dark ? Color(white: 0.12) : Color(white: 0.96))
@@ -120,7 +136,8 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
             let stopped = expectation(description: "Speech ends independently of pronunciation")
             var callbacks = 0
             monitor.start(
-                isCurrent: { true }, audioGeneration: { 0 },
+                isCurrent: { true },
+                audioGeneration: { 0 },
                 readChunk: { offset in
                     if toggleDuringCapture, offset > 0 {
                         DictionaryMatcherExperiment.setEnabled(false)
@@ -144,7 +161,8 @@ final class CustomDictionaryManualEntryTests: XCTestCase {
         let staleCallback = expectation(description: "No callback for stale capture")
         staleCallback.isInverted = true
         monitor.start(
-            isCurrent: { current }, audioGeneration: { 0 },
+            isCurrent: { current },
+            audioGeneration: { 0 },
             readChunk: { _ in
                 current = false
                 read.fulfill()

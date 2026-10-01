@@ -1470,51 +1470,34 @@ final class FluidAudioProvider: TranscriptionProvider {
     }
 
     func clearCache() async throws {
+        let selectedModel = self.modelOverride ?? SettingsStore.shared.selectedSpeechModel
         self.automaticPronunciationProfiles = []
         self.didLoadAutomaticPronunciationProfiles = false
         self.recordingGeneration = UUID()
         self.resetIncrementalSession()
-        let baseCacheDir = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
-        let selectedModel = self.modelOverride ?? SettingsStore.shared.selectedSpeechModel
-        DebugLogger.shared.info(
-            "FluidAudioProvider: clearCache called for \(selectedModel.displayName)",
-            source: "FluidAudioProvider"
-        )
-
-        let start = Date()
-        if selectedModel == .parakeetTDTv2 {
-            // Clear v2 cache only
-            let v2CacheDir = baseCacheDir.appendingPathComponent("parakeet-tdt-0.6b-v2-coreml")
-            if FileManager.default.fileExists(atPath: v2CacheDir.path) {
-                try FileManager.default.removeItem(at: v2CacheDir)
-                DebugLogger.shared.info("FluidAudioProvider: Deleted Parakeet v2 cache", source: "FluidAudioProvider")
-            }
-        } else {
-            // Clear v3 cache only (default)
-            let v3CacheDir = baseCacheDir.appendingPathComponent("parakeet-tdt-0.6b-v3-coreml")
-            if FileManager.default.fileExists(atPath: v3CacheDir.path) {
-                try FileManager.default.removeItem(at: v3CacheDir)
-                DebugLogger.shared.info("FluidAudioProvider: Deleted Parakeet v3 cache", source: "FluidAudioProvider")
-            }
-        }
-
-        DebugLogger.shared.debug(
-            "FluidAudioProvider: clearCache completed in \(String(format: "%.3f", Date().timeIntervalSince(start)))s",
-            source: "FluidAudioProvider"
-        )
-
+        self.temporalWarmRequest = nil
+        let warmTask = self.temporalWarmTask
+        warmTask?.cancel()
+        await warmTask?.value
         self.isReady = false
         self.streamingAsrManager = nil
         self.finalAsrManager = nil
         self.temporalModels = nil
-        self.temporalWarmTask?.cancel()
-        self.temporalWarmRequest = nil
         self.pronunciationProfilesToWarm = []
         self.edgeReferenceCache.removeAll()
         self.temporalReferenceCache.removeAll()
         self.isWordBoostingActive = false
         self.boostedVocabularyTermsCount = 0
         self.boostedTermLookup = []
+
+        let version: AsrModelVersion = selectedModel == .parakeetTDTv2 ? .v2 : .v3
+        let directory = AsrModels.defaultCacheDirectory(for: version)
+        try await Task.detached(priority: .userInitiated) {
+            if FileManager.default.fileExists(atPath: directory.path) {
+                try FileManager.default.removeItem(at: directory)
+            }
+        }.value
+        DebugLogger.shared.info("FluidAudioProvider: Deleted cache for \(selectedModel.displayName)", source: "FluidAudioProvider")
     }
 
     /// Provides direct access to the underlying AsrManager for advanced use cases
