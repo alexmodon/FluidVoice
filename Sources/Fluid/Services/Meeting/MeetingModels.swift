@@ -271,6 +271,7 @@ nonisolated struct MeetingCaptureConfiguration: Codable, Equatable, Sendable {
     var application: MeetingApplicationIdentity?
     var microphone: MeetingMicrophoneIdentity
     var chunkDuration: TimeInterval
+    var timestampDefaultTitle: Bool? = nil
 
     init(
         mode: MeetingCaptureMode,
@@ -279,7 +280,8 @@ nonisolated struct MeetingCaptureConfiguration: Codable, Equatable, Sendable {
         platform: MeetingPlatformProfile? = nil,
         application: MeetingApplicationIdentity? = nil,
         microphone: MeetingMicrophoneIdentity,
-        chunkDuration: TimeInterval = Self.defaultChunkDuration
+        chunkDuration: TimeInterval = Self.defaultChunkDuration,
+        timestampDefaultTitle: Bool = false
     ) {
         self.mode = mode
         self.title = title
@@ -288,6 +290,7 @@ nonisolated struct MeetingCaptureConfiguration: Codable, Equatable, Sendable {
         self.application = application
         self.microphone = microphone
         self.chunkDuration = max(60, chunkDuration)
+        self.timestampDefaultTitle = timestampDefaultTitle
     }
 
     func validate() throws {
@@ -774,6 +777,8 @@ nonisolated struct MeetingTranscriptSegment: Codable, Identifiable, Equatable, S
     var sourceTrackID: MeetingAudioTrackID
     var speakerID: SessionSpeakerID?
     var text: String
+    /// The initial ASR wording is retained when a user corrects this turn.
+    var originalText: String? = nil
     var revision: Int
     var status: MeetingTranscriptStatus
     var overlap: MeetingTranscriptOverlap
@@ -864,6 +869,8 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
     var schemaVersion: Int
     var id: MeetingSessionID
     var title: String
+    /// Present only for automatically named recordings; cleared when the user renames one.
+    var defaultTitleBase: String? = nil
     var languageCode: String
     var mode: MeetingCaptureMode
     var platform: MeetingPlatformProfile?
@@ -908,7 +915,10 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
-        self.title = configuration.title
+        self.defaultTitleBase = configuration.timestampDefaultTitle == true ? configuration.title : nil
+        self.title = self.defaultTitleBase.map {
+            "\($0) · \(startedAt.formatted(.dateTime.year().month(.abbreviated).day().hour().minute()))"
+        } ?? configuration.title
         self.languageCode = configuration.languageCode
         self.mode = configuration.mode
         self.platform = configuration.platform
@@ -1183,6 +1193,8 @@ nonisolated enum MeetingDomainError: LocalizedError, Equatable {
     case cannotMergeSpeakerWithItself
     case cannotMergeSpeakers
     case emptyMeetingTitle
+    case emptyTranscriptText
+    case staleTranscriptEdit
 
     var errorDescription: String? {
         switch self {
@@ -1200,6 +1212,10 @@ nonisolated enum MeetingDomainError: LocalizedError, Equatable {
             return "A speaker can't be merged into itself."
         case .cannotMergeSpeakers:
             return "These speakers can't be merged."
+        case .emptyTranscriptText:
+            return "Transcript text cannot be empty."
+        case .staleTranscriptEdit:
+            return "This paragraph changed while you were editing. Reopen it and try again."
         case .emptyMeetingTitle:
             return "Meeting title cannot be empty."
         }

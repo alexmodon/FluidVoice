@@ -93,16 +93,19 @@ final nonisolated class MeetingLiveTranscriptionCoordinator: @unchecked Sendable
         #endif
     }
 
-    /// The capture-tee entry point. Copies the sample immediately, then hands it to the matching
+    /// The capture-tee entry point. Copies PCM only for an active engine, then hands it to the
     /// track's bounded queue — never retains the `CMSampleBuffer` beyond this call.
     func offer(kind: MeetingAudioTrackKind, sampleBuffer: CMSampleBuffer) {
         #if arch(arm64)
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard pts.isNumeric else { return }
+        // Keep the shared capture clock even when this track has no caption engine.
+        self.originBox.establish(pts)
         guard self.stateLock.withLock({ kind == .microphone ? self.microphoneEngine != nil : self.applicationEngine != nil }) else { return }
         guard let sample = MeetingLiveSampleCopy.copy(sampleBuffer) else {
             self.diag("[live/tee] sample copy FAILED kind=\(kind)")
             return
         }
-        self.originBox.establish(sample.pts)
         let engine: MeetingLiveTrackEngine? = self.stateLock.withLock { () -> MeetingLiveTrackEngine? in
             let count = (self.offerCounts[kind] ?? 0) + 1
             self.offerCounts[kind] = count
