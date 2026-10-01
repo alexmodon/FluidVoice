@@ -667,6 +667,63 @@ final class MeetingTranscriptionBackendTests: XCTestCase {
         XCTAssertEqual(factoryCallCount, 0, "preflight failures must not construct a backend")
     }
 
+    func testSavedLegacyBackendUsesProductionForFrenchWithoutChangingPreference() async {
+        let settings = SettingsStore.shared
+        let previous = settings.meetingTranscriptionBackendID
+        defer { settings.meetingTranscriptionBackendID = previous }
+        settings.meetingTranscriptionBackendID = .legacyCompatibility
+        let marker = CocoaError(.userCancelled)
+        var productionPreparations = 0
+        let pipeline = MeetingProcessingPipeline(
+            asrServiceProvider: { XCTFail("Routing must happen before ASR loading"); return ASRService() },
+            managesModelResidency: false,
+            prepareDiarizationModel: { productionPreparations += 1; throw marker }
+        )
+        do {
+            _ = try await pipeline.process(
+                session: self.makeSession(languageCode: "fr"),
+                sessionDirectory: FileManager.default.temporaryDirectory,
+                progress: { _ in }
+            )
+            XCTFail("Expected the production preparation marker")
+        } catch {
+            XCTAssertEqual(error as? CocoaError, marker)
+        }
+        XCTAssertEqual(productionPreparations, 1)
+        XCTAssertEqual(settings.meetingTranscriptionBackendID, .legacyCompatibility)
+    }
+
+    func testExplicitLegacyAndUnknownSavedBackendsDoNotSilentlyFallBack() async {
+        let settings = SettingsStore.shared
+        let previous = settings.meetingTranscriptionBackendID
+        defer { settings.meetingTranscriptionBackendID = previous }
+        let unknown = MeetingBackendID(rawValue: "unknown-saved-backend")
+        for pinned in [true, false] {
+            settings.meetingTranscriptionBackendID = pinned ? .legacyCompatibility : unknown
+            let pipeline = MeetingProcessingPipeline(
+                asrServiceProvider: { XCTFail("Rejected selections must not load models"); return ASRService() },
+                managesModelResidency: false,
+                backendID: pinned ? .legacyCompatibility : nil,
+                prepareDiarizationModel: { XCTFail("Explicit/unknown selections must not use production") }
+            )
+            do {
+                _ = try await pipeline.process(
+                    session: self.makeSession(languageCode: "fr"),
+                    sessionDirectory: FileManager.default.temporaryDirectory,
+                    progress: { _ in }
+                )
+                XCTFail("The incompatible selection must be rejected")
+            } catch {
+                XCTAssertEqual(
+                    error as? MeetingBackendError,
+                    pinned
+                        ? .unsupportedLanguage(backend: .legacyCompatibility, languageCode: "fr")
+                        : .unknownBackend(unknown)
+                )
+            }
+        }
+    }
+
     /// Every chunk reports unreadable, so a manifest builds to explicit gaps without fixture audio.
     private struct UnreadableFixtureObserver: MeetingChunkAudioObserving {
         func observe(
