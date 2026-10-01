@@ -2022,17 +2022,7 @@ private struct MeetingSetupCanvas: View {
             MeetingDocumentTabs(selection: self.$documentSection, primaryTitle: "Meeting home", primaryIcon: "house", isEnabled: !self.isStarting)
 
             if self.documentSection == .summary {
-                VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
-                    Text("Choose a meeting to summarize")
-                        .font(self.theme.typography.bodyStrong)
-                        .foregroundStyle(self.theme.palette.primaryText)
-                        .accessibilityAddTraits(.isHeader)
-                    Text("Select a completed meeting from meeting history, then open Meet Summary. New meetings can be summarized after transcription finishes.")
-                        .font(self.theme.typography.body)
-                        .foregroundStyle(self.theme.palette.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, self.theme.metrics.spacing.md)
+                MeetingSummaryView()
             } else {
                 self.recordingSetup
             }
