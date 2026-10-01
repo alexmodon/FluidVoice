@@ -328,6 +328,16 @@ enum PrivateAIControllerChecks {
         check(vm.resetCount == resetsBeforeMissing + 1, "Missing files clear stale verification")
         check(PrivateAIIntegrationService.downloads == downloadsBeforeMissing, "Recovery never silently starts a download")
         check(PrivateAIIntegrationService.removals == removalsBeforeMissing, "Recovery never deletes model files")
+        vm.verificationMessage = PrivateAIModelLoadState.missingModelMessage
+        controller.verifyPrivateAIConnection(.init(id: "mini"), onCompletion: { reportedError = $0 })
+        await self.eventually { !controller.isBusy }
+        check(controller.privateAILoadState.needsDownload("mini"), "Missing installation during Verify uses the same recovery as Load")
+        check(reportedError == "Model files are missing. Download again to repair.", "Missing installation explains recovery")
+        check(vm.resetCount == resetsBeforeMissing + 2, "Missing installation clears stale verification")
+        check(
+            PrivateAIIntegrationService.downloads == downloadsBeforeMissing && PrivateAIIntegrationService.removals == removalsBeforeMissing,
+            "Verification recovery does not download or remove files"
+        )
         controller.refreshPrivateAILoadState()
         check(controller.privateAILoadState.needsDownload("mini"), "Passive refresh retains recovery state")
         vm.verified = true
@@ -336,9 +346,10 @@ enum PrivateAIControllerChecks {
         check(controller.privateAILoadState.isLoaded("mini"), "Explicit repair verifies and clears recovery state")
         check(PrivateAIIntegrationService.downloads == downloadsBeforeMissing + 1, "Repair uses the existing download path once")
         for message in ["Network connection lost", "Not enough disk space", "Model checksum mismatch", "Failed to load local model: model.safetensors."] {
-            check(PrivateAIModelLoadState.failure(modelID: "mini", message: message).failureMessage(for: "mini") == message,
-                  "Non-missing failures retain their actual diagnostic")
+            check(
+                PrivateAIModelLoadState.failure(modelID: "mini", message: message).failureMessage(for: "mini") == message,
+                "Non-missing failures retain their actual diagnostic"
+            )
         }
-
     }
 }

@@ -2,6 +2,8 @@ import AppKit
 import Combine
 
 enum PrivateAIModelLoadState: Equatable {
+    static let missingModelMessage = "Model file is not installed."
+
     case idle
     case downloadRequired(modelID: String)
     case downloading(modelID: String, progress: PrivateAIModelDownloadProgress?)
@@ -16,7 +18,7 @@ enum PrivateAIModelLoadState: Equatable {
 
     static func failure(modelID: String, message: String) -> Self {
         // Verification crosses the provider bridge as text. Match only its known missing-file errors.
-        if message.hasPrefix("Missing local model: ") || message == "Model file is not installed." {
+        if message.hasPrefix("Missing local model: ") || message == self.missingModelMessage {
             return .downloadRequired(modelID: modelID)
         }
         return .failed(modelID: modelID, message: message)
@@ -351,7 +353,7 @@ final class PrivateAISettingsController: ObservableObject {
         guard let operation = self.beginOperation(for: model.id) else { return }
         guard PrivateAIIntegrationService.isModelInstalled(model) else {
             self.session.finish(operation)
-            self.recordFailure(modelID: model.id, message: "Model file is not installed.")
+            self.recordFailure(modelID: model.id, message: PrivateAIModelLoadState.missingModelMessage)
             return
         }
 

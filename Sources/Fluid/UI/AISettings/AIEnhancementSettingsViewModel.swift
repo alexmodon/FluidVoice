@@ -389,7 +389,7 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
 
         guard PrivateAIIntegrationService.isModelInstalled(currentModel) else {
             self.updateConnectionStatus(.failed, for: providerID)
-            self.setConnectionError("\(currentModel.displayName) is not installed.", for: providerID)
+            self.setConnectionError(PrivateAIModelLoadState.missingModelMessage, for: providerID)
             return false
         }
 
