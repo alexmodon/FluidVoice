@@ -521,6 +521,28 @@ final class MeetingTranscriptAssemblerTests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackResetClearsCompletedFailureAndRejectsStaleLoads() async throws {
+        let playback = MeetingSegmentPlayback()
+        playback.toggle(sessionID: UUID(), segmentID: UUID())
+        let deadline = Date().addingTimeInterval(2)
+        while playback.isLoading, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertNotNil(playback.errorMessage, "A completed load failure must still be visible")
+        playback.stop()
+        XCTAssertNil(playback.errorMessage, "Changing meetings clears the old warning")
+        playback.toggle(sessionID: UUID(), segmentID: UUID())
+        playback.stop()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(playback.errorMessage)
+        XCTAssertNil(playback.activeSegmentID)
+        XCTAssertFalse(playback.isLoading)
+        XCTAssertFalse(playback.progress.isPlaying)
+        XCTAssertEqual(playback.progress.elapsed, 0)
+        XCTAssertEqual(playback.progress.duration, 0)
+    }
+
+    @MainActor
     func testPlaybackCancellationCannotRestartOrReportStaleFailure() async throws {
         let playback = MeetingSegmentPlayback()
         playback.toggle(sessionID: UUID(), segmentID: UUID())

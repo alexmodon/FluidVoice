@@ -34,7 +34,6 @@ final class MeetingSegmentPlayback: ObservableObject {
             return
         }
         self.stop()
-        self.errorMessage = nil
         self.activeSegmentID = segmentID
         self.isLoading = true
         let requestID = self.requestID
@@ -142,6 +141,7 @@ final class MeetingSegmentPlayback: ObservableObject {
 
     func stop() {
         self.requestID = UUID()
+        self.errorMessage = nil
         self.loadTask?.cancel()
         self.loadTask = nil
         self.player?.pause()
