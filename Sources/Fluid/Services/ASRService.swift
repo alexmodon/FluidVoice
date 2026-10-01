@@ -4031,7 +4031,7 @@ final class ASRService: ObservableObject {
                 try await self.retireDictationASRResourcesForMeeting(lease: lease)
             },
             makeProvider: { configuration in
-                // Fixed Parakeet TDT v2 English policy; never reads selectedSpeechModel.
+                // Language selects the pinned Parakeet v2/v3 model; never reads selectedSpeechModel.
                 try FluidAudioProvider(meetingConfiguration: configuration)
             },
             prepareProvider: { provider, _, progress in

@@ -322,6 +322,7 @@ final class MeetingSessionCoordinator: ObservableObject {
         return MeetingCaptureConfiguration(
             mode: mode,
             title: title,
+            languageCode: SettingsStore.shared.meetingRecordingDefaults.languageCode ?? "en",
             application: application,
             microphone: microphone
         )
@@ -445,7 +446,7 @@ final class MeetingSessionCoordinator: ObservableObject {
         }
         self.liveTranscriptionCoordinator = liveTranscriptionCoordinator
         self.liveTranscript = .empty
-        liveTranscriptionCoordinator.start(mode: configuration.mode)
+        liveTranscriptionCoordinator.start(mode: configuration.mode, languageCode: configuration.languageCode)
 
         do {
             try await self.store.create(session)

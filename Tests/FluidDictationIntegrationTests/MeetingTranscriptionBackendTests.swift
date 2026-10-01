@@ -640,11 +640,11 @@ final class MeetingTranscriptionBackendTests: XCTestCase {
 
         do {
             _ = try await self.makePipeline(registry: registry(), backendID: nil).process(
-                session: self.makeSession(languageCode: "fr"),
+                session: self.makeSession(languageCode: "zh"),
                 sessionDirectory: FileManager.default.temporaryDirectory,
                 progress: { _ in }
             )
-            XCTFail("Non-English sessions must still be rejected")
+            XCTFail("Unsupported languages must still be rejected")
         } catch {
             guard case MeetingProcessingError.unsupportedLanguage = error else {
                 return XCTFail("Expected unsupportedLanguage, got \(error)")

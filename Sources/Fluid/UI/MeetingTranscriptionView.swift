@@ -31,6 +31,7 @@ struct MeetingTranscriptionSetupDraft: Equatable {
     var usesAutomaticApplication = true
     var selectedMicrophoneID: String?
     /// Once true, the default title stops following the selected application/mode.
+    var languageCode: String
     var titleWasEdited = false
     var autoDetectEnabled: Bool
     var browserDetectionEnabled: Bool
@@ -39,6 +40,7 @@ struct MeetingTranscriptionSetupDraft: Equatable {
         let defaults = settings.meetingRecordingDefaults
         self.autoDetectEnabled = settings.meetingAutoDetectEnabled
         self.browserDetectionEnabled = settings.meetingAutoDetectBrowserEnabled
+        self.languageCode = defaults.languageCode ?? "en"
         self.mode = defaults.mode
         self.title = Self.defaultTitle(mode: defaults.mode, applicationDisplayName: nil)
         self.selectedApplicationID = nil
@@ -713,6 +715,7 @@ struct MeetingTranscriptionView: View {
         return MeetingCaptureConfiguration(
             mode: application == nil ? .inRoom : .onlineCall,
             title: title,
+            languageCode: self.setupDraft.languageCode,
             platform: application.map {
                 MeetingPlatformProfile(identifier: $0.bundleIdentifier, displayName: $0.displayName)
             },
@@ -908,6 +911,7 @@ struct MeetingTranscriptionView: View {
         return MeetingCaptureConfiguration(
             mode: session.mode,
             title: session.title,
+            languageCode: session.languageCode,
             platform: session.platform,
             application: application,
             microphone: microphone
@@ -1139,7 +1143,8 @@ struct MeetingTranscriptionView: View {
             applicationDisplayName: previousDefaults.applicationDisplayName,
             microphoneCaptureDeviceID: microphone.identity.captureDeviceID,
             microphoneCoreAudioUID: microphone.identity.coreAudioUID,
-            microphoneRole: .unknown
+            microphoneRole: .unknown,
+            languageCode: self.setupDraft.languageCode
         )
 
         let previousRetentionPolicy = settings.meetingAudioRetentionPolicy

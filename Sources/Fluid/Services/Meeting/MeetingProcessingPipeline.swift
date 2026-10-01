@@ -1396,7 +1396,7 @@ final class MeetingProcessingPipeline: MeetingProcessingControlling {
         sessionDirectory: URL,
         progress: @escaping @MainActor (MeetingProcessingStage) -> Void
     ) async throws -> MeetingProcessingResult {
-        guard session.languageCode == "en" else {
+        guard VoiceEngineLanguageCatalog.parakeetV3LanguageIDs.contains(session.languageCode) else {
             throw MeetingProcessingError.unsupportedLanguage
         }
         guard session.audioTracks.contains(where: { !$0.chunks.isEmpty }) else {
@@ -3155,7 +3155,7 @@ nonisolated enum MeetingProcessingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedLanguage:
-            return "Meeting transcription currently supports English only."
+            return "Choose a supported meeting language from Recording settings."
         case .noRecoverableAudio:
             return "No finalized meeting audio is available to transcribe."
         case .dictationActive:

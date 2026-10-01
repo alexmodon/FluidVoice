@@ -8,8 +8,8 @@ nonisolated enum MeetingProviderOptionsError: Error, Equatable {
 }
 
 /// Immutable provider options for the opt-in meeting post-processing path. Only the fixed
-/// Parakeet TDT v2 English policy is supported; `resolve` rejects anything else instead of
-/// silently coercing it (e.g. labelling a v3 model "v2" or dropping a requested feature).
+/// Parakeet TDT v2 handles English; v3 handles its supported multilingual languages.
+/// Unsupported model/language combinations and enhancement features are rejected.
 nonisolated struct MeetingProviderOptions: Equatable, Sendable {
     let model: SettingsStore.SpeechModel
     let vocabularyBoostingEnabled: Bool
@@ -20,11 +20,14 @@ nonisolated struct MeetingProviderOptions: Equatable, Sendable {
     static func resolve(
         _ configuration: MeetingFinalProcessingConfiguration
     ) throws -> MeetingProviderOptions {
-        let model = SettingsStore.SpeechModel(rawValue: configuration.asrModel)
-        guard model == .parakeetTDTv2 else {
+        guard let model = SettingsStore.SpeechModel(rawValue: configuration.asrModel),
+              model == .parakeetTDTv2 || model == .parakeetTDT
+        else {
             throw MeetingProviderOptionsError.unsupportedASRModel(configuration.asrModel)
         }
-        guard configuration.languageCode == MeetingFinalProcessingConfiguration.defaultLanguageCode else {
+        guard VoiceEngineLanguageCatalog.parakeetV3LanguageIDs.contains(configuration.languageCode),
+              model != .parakeetTDTv2 || configuration.languageCode == "en"
+        else {
             throw MeetingProviderOptionsError.unsupportedLanguageCode(configuration.languageCode)
         }
         guard !configuration.vocabularyBoostingEnabled else {
@@ -40,7 +43,7 @@ nonisolated struct MeetingProviderOptions: Equatable, Sendable {
             throw MeetingProviderOptionsError.unsupportedFeature("experimentalUnifiedFinal")
         }
         return MeetingProviderOptions(
-            model: .parakeetTDTv2,
+            model: model,
             vocabularyBoostingEnabled: false,
             pronunciationMatchingEnabled: false,
             customDictionaryRewritingEnabled: false,

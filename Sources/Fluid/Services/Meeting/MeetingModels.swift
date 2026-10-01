@@ -140,6 +140,7 @@ nonisolated struct MeetingRecordingDefaults: Codable, Equatable, Sendable {
     var microphoneCaptureDeviceID: String?
     var microphoneCoreAudioUID: String?
     var microphoneRole: MeetingMicrophoneRole
+    var languageCode: String? = nil
 
     static let unconfigured = Self(
         isConfigured: false,
@@ -290,7 +291,7 @@ nonisolated struct MeetingCaptureConfiguration: Codable, Equatable, Sendable {
     }
 
     func validate() throws {
-        guard self.languageCode == "en" else {
+        guard VoiceEngineLanguageCatalog.parakeetV3LanguageIDs.contains(self.languageCode) else {
             throw MeetingModelValidationError.unsupportedLanguage
         }
         guard !self.microphone.captureDeviceID.isEmpty else {
@@ -1037,7 +1038,7 @@ nonisolated struct MeetingSession: Codable, Identifiable, Equatable, Sendable {
         else {
             throw MeetingModelValidationError.unsupportedSchema(self.schemaVersion)
         }
-        guard self.languageCode == "en" else {
+        guard VoiceEngineLanguageCatalog.parakeetV3LanguageIDs.contains(self.languageCode) else {
             throw MeetingModelValidationError.unsupportedLanguage
         }
         guard !self.selectedMicrophone.captureDeviceID.isEmpty else {
@@ -1232,7 +1233,7 @@ nonisolated enum MeetingModelValidationError: LocalizedError, Equatable {
         case let .unsupportedSchema(version):
             return "Unsupported meeting schema version \(version)."
         case .unsupportedLanguage:
-            return "Meeting transcription currently supports English only."
+            return "Choose a supported meeting language from Recording settings."
         case .missingMicrophone:
             return "A microphone must be selected."
         case .missingOnlineApplication:

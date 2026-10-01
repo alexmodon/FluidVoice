@@ -57,6 +57,7 @@ extension AppServices {
         return MeetingCaptureConfiguration(
             mode: mode,
             title: MeetingTranscriptionSetupDraft.defaultTitle(mode: mode, applicationDisplayName: application?.displayName),
+            languageCode: defaults.languageCode ?? "en",
             platform: application.map { MeetingPlatformProfile(identifier: $0.bundleIdentifier, displayName: $0.displayName) },
             application: application,
             microphone: microphone
