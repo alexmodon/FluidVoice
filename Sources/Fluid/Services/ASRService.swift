@@ -6755,7 +6755,9 @@ final class ASRService: ObservableObject {
         try await self.clearModelCache(for: SettingsStore.shared.selectedSpeechModel)
     }
 
-    func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
+    func clearModelCache(for requestedModel: SettingsStore.SpeechModel) async throws {
+        // The legacy Streaming320 name shares Streaming's files and active provider.
+        let model = requestedModel == .nemotronStreaming320 ? .nemotronStreaming : requestedModel
         try self.requireStreamingProviderAvailable()
         guard self.deletingModelID == nil, !self.hasActiveModelDownload, !self.hasActiveModelPreparation,
               !self.isMeetingASRPreparationClaimed

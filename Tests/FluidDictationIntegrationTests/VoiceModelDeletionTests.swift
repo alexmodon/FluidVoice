@@ -30,6 +30,55 @@ private final class DeletionFixtureProvider: TranscriptionProvider {
 
 @MainActor
 final class VoiceModelDeletionTests: XCTestCase {
+    func testLegacyNemotronDeletionUsesCanonicalProviderAndInvalidatesOnlyActiveModel() async throws {
+        let settings = SettingsStore.shared
+        let previous = settings.selectedSpeechModel
+        defer { settings.selectedSpeechModel = previous }
+        for selected: SettingsStore.SpeechModel in [.nemotronStreaming, .whisperBase] {
+            settings.selectedSpeechModel = selected
+            let isActive = selected == .nemotronStreaming
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let streamingFile = directory.appendingPathComponent("streaming")
+            let offlineFile = directory.appendingPathComponent("offline")
+            try Data([1]).write(to: streamingFile)
+            try Data([2]).write(to: offlineFile)
+            let asr = ASRService()
+            let canonical = DeletionFixtureProvider()
+            let alias = DeletionFixtureProvider()
+            let unrelated = DeletionFixtureProvider()
+            asr.modelProvidersForTesting[.nemotronStreaming] = canonical
+            asr.modelProvidersForTesting[.nemotronStreaming320] = alias
+            asr.modelProvidersForTesting[.whisperBase] = unrelated
+            asr.isAsrReady = true
+            canonical.clear = {
+                XCTAssertEqual(asr.deletingModelID, SettingsStore.SpeechModel.nemotronStreaming.id)
+                XCTAssertEqual(asr.activeExclusiveActivity, .modelMaintenance)
+                XCTAssertEqual(asr.isAsrReady, !isActive, "Invalidate the active model before deleting its files")
+                try FileManager.default.removeItem(at: streamingFile)
+            }
+            try await asr.clearModelCache(for: .nemotronStreaming320)
+            // Active deletion starts the existing asynchronous provider reset.
+            let resetDeadline = Date().addingTimeInterval(2)
+            while asr.activeExclusiveActivity != nil, Date() < resetDeadline {
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            XCTAssertEqual(canonical.clearCalls, 1)
+            XCTAssertFalse(canonical.isReady)
+            XCTAssertEqual(alias.clearCalls, 0)
+            XCTAssertEqual(unrelated.clearCalls, 0)
+            XCTAssertTrue(unrelated.isReady)
+            XCTAssertEqual(asr.isAsrReady, !isActive)
+            XCTAssertEqual(settings.selectedSpeechModel, selected)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: streamingFile.path))
+            XCTAssertEqual(try Data(contentsOf: offlineFile), Data([2]))
+            XCTAssertNil(asr.deletingModelID)
+            XCTAssertNil(asr.activeExclusiveActivity)
+            canonical.clear = nil
+        }
+    }
+
     func testInactiveDeletionRemovesOnlyTargetAndKeepsSelection() async throws {
         let settings = SettingsStore.shared
         let previous = settings.selectedSpeechModel
