@@ -120,7 +120,34 @@ private enum UpdatePromptTests {
         self.visiblePanel("Update Available").cancelOperation(nil)
         assert(postponed == 2)
         self.checkNewerOffers(presenter)
+        self.checkFocusedOfferRefresh(presenter)
         print("PASS: main actor responsive; focus preserved; text completes; actions, direct cancellation, duplicate/newer offers, stale buttons, queue order, dismiss-all and recovery checks")
+    }
+
+    @MainActor
+    private static func checkFocusedOfferRefresh(_ presenter: UpdatePromptPresenter) {
+        var answered: [String] = []
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Focused version 1", actions: [
+            FloatingPromptAction(title: "Install Now") { answered.append("old install") },
+            FloatingPromptAction(title: "Later") { answered.append("old later") },
+        ])
+        let oldOffer = self.visiblePanel("Update Available")
+        let oldInstall = self.button("Install Now", in: oldOffer)
+        oldOffer.makeKey()
+        assert(oldOffer.isKeyWindow)
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Focused version 2", actions: [
+            FloatingPromptAction(title: "Install Now") { answered.append("fresh install") },
+            FloatingPromptAction(title: "Later") { answered.append("fresh later") },
+        ])
+        let refreshedOffer = self.visiblePanel("Update Available")
+        assert(refreshedOffer !== oldOffer && !oldOffer.isVisible)
+        assert(refreshedOffer.isKeyWindow, "Refreshing a deliberately focused offer must preserve keyboard focus")
+        assert(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID)
+        oldInstall.performClick(nil)
+        assert(answered.isEmpty && refreshedOffer.isVisible)
+        assert(refreshedOffer.performKeyEquivalent(with: self.returnKey(for: refreshedOffer)))
+        assert(answered == ["fresh install"] && !refreshedOffer.isVisible)
     }
 
     @MainActor

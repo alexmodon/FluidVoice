@@ -14,9 +14,11 @@ final class UpdatePromptPresenter {
             guard self.floatingPromptQueue[index].message != message else { return }
             self.floatingPromptQueue[index] = FloatingPrompt(title: title, message: message, actions: actions)
             if index == 0 {
+                let wasKey = self.floatingPromptWindow?.isKeyWindow == true
                 self.floatingPromptWindow?.close()
                 self.floatingPromptWindow = nil
                 self.showNextFloatingPromptIfIdle()
+                if wasKey { self.floatingPromptWindow?.makeKey() }
             }
             return
         }
