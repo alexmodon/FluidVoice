@@ -332,6 +332,65 @@ final class SimpleUpdater {
         return (latestVersion > current, latestTag)
     }
 
+    func checkForUpdatesManually() {
+        UpdatePromptPresenter.shared.dismissAll()
+        // Confirm invocation
+        DebugLogger.shared.info("🔎 Manual update check triggered", source: "SimpleUpdater")
+
+        // Get current app version for debugging
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        DebugLogger.shared.info(
+            "Manual update check requested. Current version: \(currentVersion)",
+            source: "SimpleUpdater"
+        )
+        DebugLogger.shared.info("Checking repository: altic-dev/Fluid-oss", source: "SimpleUpdater")
+        DebugLogger.shared.debug("🔍 DEBUG: Manual update check started - Current version: \(currentVersion)", source: "SimpleUpdater")
+        DebugLogger.shared.debug("🔍 DEBUG: Repository: altic-dev/Fluid-oss", source: "SimpleUpdater")
+        let includePrerelease = SettingsStore.shared.betaReleasesEnabled
+        DebugLogger.shared.info(
+            "Beta releases opt-in: \(SettingsStore.shared.betaReleasesEnabled)",
+            source: "SimpleUpdater"
+        )
+
+        Task { @MainActor in
+            do {
+                // Use our tolerant updater to handle v-prefixed tags and 2-part versions
+                try await self.checkAndUpdate(
+                    owner: "altic-dev",
+                    repo: "Fluid-oss",
+                    includePrerelease: includePrerelease
+                )
+            } catch SimpleUpdateError.updateAlreadyInProgress {
+                DebugLogger.shared.info("Update installation already in progress", source: "SimpleUpdater")
+            } catch {
+                if let pmkError = error as? PMKError, pmkError.isCancelled {
+                    DebugLogger.shared.info("App is already up-to-date", source: "SimpleUpdater")
+                    let isBeta = SettingsStore.shared.betaReleasesEnabled
+                    self.showUpdateCheckResult(
+                        title: isBeta ? "No Beta Updates" : "No Updates",
+                        message: isBeta
+                            ? "You're already running the latest build available in the beta channel."
+                            : "You're already running the latest version of Fluid!"
+                    )
+                } else {
+                    DebugLogger.shared.error("Update check failed: \(error)", source: "SimpleUpdater")
+                    self.showUpdateCheckResult(
+                        title: "Update Check Failed",
+                        message: "Unable to check for updates. Please try again later.\n\nError: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+    }
+
+    private func showUpdateCheckResult(title: String, message: String) {
+        UpdatePromptPresenter.shared.presentFloatingPrompt(
+            title: title,
+            message: message,
+            actions: [FloatingPromptAction(title: "OK") {}]
+        )
+    }
+
     func checkAndUpdate(
         owner: String,
         repo: String,
@@ -347,6 +406,15 @@ final class SimpleUpdater {
                 self.resetUpdateOperation()
             }
         }
+
+        UpdatePromptPresenter.shared.dismissAll()
+        #if DEBUG
+        if UpdatePromptSimulation.isEnabled {
+            self.showUpdateInstallStatus(version: "Simulation")
+            shouldKeepOperationActive = true
+            return
+        }
+        #endif
 
         let releases = try await self.fetchReleases(owner: owner, repo: repo)
 
@@ -470,6 +538,7 @@ final class SimpleUpdater {
     // MARK: - Helpers
 
     func showUpdateInstallStatus(version: String) {
+        UpdatePromptPresenter.shared.dismissAll()
         guard self.updateStatusWindow == nil else { return }
 
         let panel = NSPanel(
@@ -526,6 +595,13 @@ final class SimpleUpdater {
         panel.orderFrontRegardless()
         self.updateStatusWindow = panel
     }
+
+    #if DEBUG
+    func finishSimulatedUpdate() {
+        guard UpdatePromptSimulation.isEnabled else { return }
+        self.resetUpdateOperation()
+    }
+    #endif
 
     private func resetUpdateOperation() {
         self.updateOperationGate.finish()
