@@ -54,9 +54,10 @@ private enum UpdatePromptTests {
         assert(callbackRan && offer.isVisible)
         assert(installed == 0 && postponed == 0)
 
-        presenter.presentFloatingPrompt(title: "Update Available", message: "duplicate", actions: actions)
+        presenter.presentFloatingPrompt(title: "Update Available", message: "FluidVoice v1.6.10 is now available. The app will restart automatically after installation.", actions: actions)
         presenter.presentFloatingPrompt(title: "Update Check Failed", message: "The download failed. Please try again later.", actions: [FloatingPromptAction(title: "OK") {}])
         assert(NSApp.windows.filter { $0.title == "Update Available" && $0.isVisible }.count == 1)
+        assert(self.visiblePanel("Update Available") === offer)
         later.performClick(nil)
         assert(postponed == 1 && installed == 0 && !offer.isVisible)
         primary.performClick(nil) // A stale button must not answer the next prompt or start installation.
@@ -82,7 +83,6 @@ private enum UpdatePromptTests {
         editor.insertText(" completes", replacementRange: editor.selectedRange())
         assert(editor.string == "Current dictation completes")
         let secondOffer = self.visiblePanel("Update Available")
-        self.savePreview(secondOffer)
         secondOffer.makeKey()
         assert(secondOffer.performKeyEquivalent(with: self.returnKey(for: secondOffer)))
         assert(installed == 1 && postponed == 1 && !secondOffer.isVisible)
@@ -119,7 +119,62 @@ private enum UpdatePromptTests {
         assert(installed == 1 && self.visiblePanel("Update Available").isVisible)
         self.visiblePanel("Update Available").cancelOperation(nil)
         assert(postponed == 2)
-        print("PASS: main actor responsive; focus preserved; text completes; actions, direct cancellation, duplicates, stale buttons, bounded queue, dismiss-all and recovery checks")
+        self.checkNewerOffers(presenter)
+        print("PASS: main actor responsive; focus preserved; text completes; actions, direct cancellation, duplicate/newer offers, stale buttons, queue order, dismiss-all and recovery checks")
+    }
+
+    @MainActor
+    private static func checkNewerOffers(_ presenter: UpdatePromptPresenter) {
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let keyWindow = NSApp.keyWindow
+        let firstResponder = keyWindow?.firstResponder
+        var answered: [String] = []
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Version 1", actions: [
+            FloatingPromptAction(title: "Install Now") { answered.append("old install") },
+            FloatingPromptAction(title: "Later") { answered.append("old later") },
+        ])
+        let oldOffer = self.visiblePanel("Update Available")
+        let oldInstall = self.button("Install Now", in: oldOffer)
+        let oldLater = self.button("Later", in: oldOffer)
+        presenter.presentFloatingPrompt(title: "First notice", message: "Keep queue position", actions: [FloatingPromptAction(title: "OK") { answered.append("first notice") }])
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Version 2", actions: [
+            FloatingPromptAction(title: "Install Now") { answered.append("new install") },
+            FloatingPromptAction(title: "Later") { answered.append("new later") },
+        ])
+        let newerOffer = self.visiblePanel("Update Available")
+        assert(newerOffer !== oldOffer && !oldOffer.isVisible)
+        assert(self.hasMessage("Version 2", in: newerOffer))
+        assert(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID)
+        assert(NSApp.keyWindow === keyWindow && keyWindow?.firstResponder === firstResponder)
+        oldInstall.performClick(nil)
+        oldLater.performClick(nil)
+        assert(answered.isEmpty && newerOffer.isVisible)
+        self.button("Later", in: newerOffer).performClick(nil)
+        assert(answered == ["new later"])
+
+        // Replace a queued offer in its original position, preserving surrounding notices.
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Queued version 1", actions: [FloatingPromptAction(title: "Install Now") { answered.append("old queued install") }])
+        presenter.presentFloatingPrompt(title: "Last notice", message: "Keep final queue position", actions: [FloatingPromptAction(title: "OK") { answered.append("last notice") }])
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Queued version 2", actions: [FloatingPromptAction(title: "Install Now") { answered.append("new queued install") }])
+        assert(self.visiblePanel("First notice").isVisible)
+        assert(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID)
+        assert(NSApp.keyWindow === keyWindow && keyWindow?.firstResponder === firstResponder)
+        self.visiblePanel("First notice").cancelOperation(nil)
+        let queuedOffer = self.visiblePanel("Update Available")
+        assert(self.hasMessage("Queued version 2", in: queuedOffer))
+        assert(!NSApp.windows.contains { $0.isVisible && $0.title == "Last notice" })
+        oldInstall.performClick(nil)
+        oldLater.performClick(nil)
+        assert(answered == ["new later", "first notice"] && queuedOffer.isVisible)
+        self.button("Install Now", in: queuedOffer).performClick(nil)
+        self.visiblePanel("Last notice").cancelOperation(nil)
+        assert(answered == ["new later", "first notice", "new queued install", "last notice"])
+        assert(!NSApp.windows.contains { $0.isVisible && $0.title == "Update Available" })
+    }
+
+    @MainActor
+    private static func hasMessage(_ message: String, in panel: NSWindow) -> Bool {
+        panel.contentView?.subviews.compactMap { $0 as? NSTextField }.contains { $0.stringValue == message } == true
     }
 
     @MainActor
@@ -150,17 +205,5 @@ private enum UpdatePromptTests {
             fatalError("Cannot create return-key event")
         }
         return event
-    }
-
-    @MainActor
-    private static func savePreview(_ panel: NSWindow) {
-        guard let view = panel.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { fatalError("Cannot render preview") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else { fatalError("Cannot encode preview") }
-        do {
-            try data.write(to: URL(fileURLWithPath: "/tmp/fluidvoice-update-prompt.png"))
-        } catch {
-            fatalError("Cannot save preview: \(error)")
-        }
     }
 }

@@ -10,7 +10,14 @@ final class UpdatePromptPresenter {
 
     func presentFloatingPrompt(title: String, message: String, actions: [FloatingPromptAction]) {
         guard !actions.isEmpty else { return }
-        guard !self.floatingPromptQueue.contains(where: { $0.title == title }) else {
+        if let index = self.floatingPromptQueue.firstIndex(where: { $0.title == title }) {
+            guard self.floatingPromptQueue[index].message != message else { return }
+            self.floatingPromptQueue[index] = FloatingPrompt(title: title, message: message, actions: actions)
+            if index == 0 {
+                self.floatingPromptWindow?.close()
+                self.floatingPromptWindow = nil
+                self.showNextFloatingPromptIfIdle()
+            }
             return
         }
         guard self.floatingPromptQueue.count < Self.maxQueuedFloatingPrompts else {
