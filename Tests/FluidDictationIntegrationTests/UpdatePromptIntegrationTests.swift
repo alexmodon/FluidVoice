@@ -296,6 +296,46 @@ final class UpdatePromptIntegrationTests: XCTestCase {
         XCTAssertEqual(context.fixture.requestCount, 3)
     }
 
+    func testChannelChangeDuringApprovedInstallRechecksAndRequiresFreshApproval() async throws {
+        for currentChannelVersion in ["v100.0.0", nil] as [String?] {
+            let context = try UpdateTestContext()
+            defer { context.cleanup() }
+            context.fixture.setReply(version: "v99.0.0")
+            var installs = 0
+            context.updater.simulationInstallHandler = { installs += 1 }
+            context.updater.checkForUpdatesManually()
+            try await self.finishCheck(context)
+            let oldOffer = try self.visibleWindow("Update Available")
+            let oldInstall = try self.button("Install Now", in: oldOffer)
+            context.fixture.setReply(version: "v99.0.0", held: true)
+            oldInstall.performClick(nil)
+            try await self.waitFor { context.fixture.requestCount == 2 && context.updater.isUpdateInProgress }
+            context.defaults.set(true, forKey: SettingsStore.UpdateKeys.betaReleasesEnabled)
+            let revision = context.defaults.integer(forKey: SettingsStore.UpdateKeys.channelPreferenceRevision)
+            context.defaults.set(revision &+ 1, forKey: SettingsStore.UpdateKeys.channelPreferenceRevision)
+            context.updater.updateChannelDidChange()
+            context.fixture.setReply(version: currentChannelVersion)
+            context.fixture.release()
+            try await self.finishCheck(context, requests: 3)
+            XCTAssertFalse(context.updater.isUpdateInProgress)
+            XCTAssertEqual(installs, 0, "A channel change must invalidate approval before installation")
+            oldInstall.performClick(nil)
+            XCTAssertEqual(installs, 0)
+            if let currentChannelVersion {
+                let freshOffer = try self.visibleWindow("Update Available")
+                XCTAssertTrue(freshOffer.contentView?.subviews.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains(currentChannelVersion) } == true)
+                try self.button("Install Now", in: freshOffer).performClick(nil)
+                try await self.waitFor { installs == 1 && !context.updater.isUpdateInProgress }
+                XCTAssertEqual(context.fixture.requestCount, 4)
+            } else {
+                XCTAssertTrue(self.isVisible("No Beta Updates"))
+                XCTAssertFalse(self.isVisible("Update Available"))
+                XCTAssertNil(context.updater.availableUpdateVersion)
+                XCTAssertEqual(context.fixture.requestCount, 3)
+            }
+        }
+    }
+
     func testInstallRejectsResultFromPreviouslyPendingDiscovery() async throws {
         let context = try UpdateTestContext()
         defer { context.cleanup() }

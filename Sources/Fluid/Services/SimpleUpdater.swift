@@ -522,7 +522,11 @@ final class SimpleUpdater: ObservableObject {
             do {
                 try await self.checkAndUpdate(owner: "altic-dev", repo: "Fluid-oss", includePrerelease: channel, expectedVersion: version)
             } catch SimpleUpdateError.releaseChanged {
-                self.showAvailableUpdate()
+                if self.availableUpdateVersion != nil, self.availableChannelRevision == self.channelRevision {
+                    self.showAvailableUpdate()
+                } else {
+                    self.checkForUpdatesManually()
+                }
             } catch SimpleUpdateError.updateAlreadyInProgress {
                 return
             } catch {
