@@ -8,11 +8,23 @@ final class UpdatePromptPresenter {
     private var floatingPromptQueue: [FloatingPrompt] = []
     private static let maxQueuedFloatingPrompts = 4
 
-    func presentFloatingPrompt(title: String, message: String, actions: [FloatingPromptAction]) {
+    func presentFloatingPrompt(
+        title: String,
+        message: String,
+        actions: [FloatingPromptAction],
+        isAutomaticUpdateOffer: Bool = false
+    ) {
         guard !actions.isEmpty else { return }
         if let index = self.floatingPromptQueue.firstIndex(where: { $0.title == title }) {
-            guard self.floatingPromptQueue[index].message != message else { return }
-            self.floatingPromptQueue[index] = FloatingPrompt(title: title, message: message, actions: actions)
+            let existing = self.floatingPromptQueue[index]
+            let promotesToManual = existing.isAutomaticUpdateOffer && !isAutomaticUpdateOffer
+            guard existing.message != message || promotesToManual else { return }
+            self.floatingPromptQueue[index] = FloatingPrompt(
+                title: title,
+                message: message,
+                actions: actions,
+                isAutomaticUpdateOffer: existing.isAutomaticUpdateOffer && isAutomaticUpdateOffer
+            )
             if index == 0 {
                 let wasKey = self.floatingPromptWindow?.isKeyWindow == true
                 self.floatingPromptWindow?.close()
@@ -26,7 +38,12 @@ final class UpdatePromptPresenter {
             return
         }
 
-        self.floatingPromptQueue.append(FloatingPrompt(title: title, message: message, actions: actions))
+        self.floatingPromptQueue.append(FloatingPrompt(
+            title: title,
+            message: message,
+            actions: actions,
+            isAutomaticUpdateOffer: isAutomaticUpdateOffer
+        ))
         self.showNextFloatingPromptIfIdle()
     }
 
@@ -139,6 +156,30 @@ final class UpdatePromptPresenter {
         }
     }
 
+    func dismissAutomaticUpdateOffers() {
+        self.dismissPrompts { $0.isAutomaticUpdateOffer }
+    }
+
+    func dismissUpdateOffers() {
+        self.dismissPrompts { $0.title == "Update Available" }
+    }
+
+    func dismissUpdateCheckResults() {
+        self.dismissPrompts {
+            $0.title == "No Updates" || $0.title == "No Beta Updates" || $0.title == "Update Check Failed"
+        }
+    }
+
+    private func dismissPrompts(where shouldDismiss: (FloatingPrompt) -> Bool) {
+        let removesVisiblePrompt = self.floatingPromptQueue.first.map(shouldDismiss) == true
+        self.floatingPromptQueue.removeAll(where: shouldDismiss)
+        if removesVisiblePrompt {
+            self.floatingPromptWindow?.close()
+            self.floatingPromptWindow = nil
+            self.showNextFloatingPromptIfIdle()
+        }
+    }
+
     func dismissAll() {
         self.floatingPromptWindow?.close()
         self.floatingPromptWindow = nil
@@ -156,6 +197,7 @@ private struct FloatingPrompt {
     let title: String
     let message: String
     let actions: [FloatingPromptAction]
+    let isAutomaticUpdateOffer: Bool
 }
 
 private final class FloatingPromptPanel: NSPanel {

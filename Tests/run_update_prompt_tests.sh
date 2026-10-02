@@ -12,12 +12,9 @@ python3 - "$task_repo_dir" <<'PYTEST'
 from pathlib import Path
 import sys
 source = (Path(sys.argv[1]) / 'Sources/Fluid/AppDelegate.swift').read_text()
-update_prompts = source[source.index('    private func showUpdateNotification('):]
-assert 'runModal' not in update_prompts
-assert 'clearUpdateSnooze()' in update_prompts and 'snoozeUpdatePrompt(forVersion: version)' in update_prompts
-assert 'self?.checkForUpdatesManually()' in update_prompts
-assert update_prompts.count('presentFloatingPrompt(') == 2
-assert 'UpdatePromptPresenter.shared' in source
+automatic = source[source.index('    private func checkForUpdatesAutomatically('):source.index('    private func showUpdateAlert(')]
+assert 'SimpleUpdater.shared.checkForUpdatesAutomatically()' in automatic
+assert 'checkAndUpdate(' not in automatic
 for relative_path, start, end in [
     ('Sources/Fluid/UI/SettingsView.swift', 'Button("Check for Updates")', 'Button("Release Notes")'),
     ('Sources/Fluid/Services/MenuBarManager.swift', '@objc private func checkForUpdates(', '@objc private func rollbackToPreviousVersion('),
@@ -25,14 +22,21 @@ for relative_path, start, end in [
     text = (Path(sys.argv[1]) / relative_path).read_text()
     update_section = text[text.index(start):text.index(end, text.index(start))]
     assert 'runModal' not in update_section, relative_path
-    assert 'SimpleUpdater.shared.checkForUpdatesManually()' in update_section, relative_path
+    assert 'checkForUpdatesManually()' in update_section, relative_path
+    assert 'checkAndUpdate(' not in update_section, relative_path
 updater = (Path(sys.argv[1]) / 'Sources/Fluid/Services/SimpleUpdater.swift').read_text()
-manual = updater[updater.index('    func checkForUpdatesManually('):updater.index('    func checkAndUpdate(')]
-assert 'runModal' not in manual
-assert 'UpdatePromptPresenter.shared.presentFloatingPrompt(' in manual
-assert 'catch SimpleUpdateError.updateAlreadyInProgress' in manual
+manual = updater[updater.index('    func checkForUpdatesManually('):updater.index('    func showAvailableUpdate(')]
+assert 'startUpdateCheck(explicit: true)' in manual
+assert 'checkAndUpdate(' not in manual
+assert 'runModal' not in updater
+assert 'self.updatePrompts.presentFloatingPrompt(' in updater
+assert 'isAutomaticUpdateOffer: automatic' in updater
+assert 'expectedVersion: version' in updater
+assert 'self.updateDefaults.set(version, forKey: SettingsStore.UpdateKeys.snoozedUpdateVersion)' in updater
 status = updater[updater.index('    func showUpdateInstallStatus('):updater.index('    private func resetUpdateOperation(')]
-assert 'UpdatePromptPresenter.shared.dismissAll()' in status
+assert 'self.updatePrompts.dismissAll()' in status
 assert 'progress.startAnimation(nil)' in status
-print('PASS: all updater result paths use shared nonmodal prompts; install/snooze preserved; status clears prompts and starts animation')
+trigger = (Path(sys.argv[1]) / 'Tests/trigger_update_ui_simulation.swift').read_text()
+assert 'toggleRecording' not in trigger and 'dictation-toggle' not in trigger
+print('PASS: automatic discovery and explicit confirmation remain separate; update results nonmodal; approval revalidates version; simulation trigger cannot record')
 PYTEST

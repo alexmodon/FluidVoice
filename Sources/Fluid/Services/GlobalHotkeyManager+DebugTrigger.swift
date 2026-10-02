@@ -17,16 +17,6 @@ extension GlobalHotkeyManager {
                 self?.toggleRecording()
             }
         }
-        #if DEBUG
-        // Separate PID-scoped diagnostic: never toggle another running FluidVoice instance.
-        DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("com.FluidApp.debug.toggleRecording.scoped"),
-            object: String(ProcessInfo.processInfo.processIdentifier),
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.toggleRecording() }
-        }
-        #endif
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.FluidApp.debug.pasteLastTranscript"),
             object: nil,

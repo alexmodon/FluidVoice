@@ -461,98 +461,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         #if DEBUG
         guard !UpdatePromptSimulation.isEnabled else { return }
         #endif
-        // Check if we should perform an automatic update check
-        guard SettingsStore.shared.shouldCheckForUpdates() else {
-            let reason = !SettingsStore.shared.autoUpdateCheckEnabled ? "disabled by user" : "checked recently"
-            DebugLogger.shared.debug("Automatic update check skipped (\(reason))", source: "AppDelegate")
-            return
-        }
-
-        DebugLogger.shared.info("Scheduling automatic update check...", source: "AppDelegate")
-
-        // Delay check slightly to avoid slowing down app launch
+        guard SettingsStore.shared.shouldCheckForUpdates() else { return }
         Task {
-            // Wait 3 seconds after launch before checking
+            // Keep the existing launch delay; the updater rechecks current preferences.
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-
-            DebugLogger.shared.info("Performing automatic update check for altic-dev/Fluid-oss", source: "AppDelegate")
-
-            do {
-                let includePrerelease = SettingsStore.shared.betaReleasesEnabled
-                let result = try await SimpleUpdater.shared.checkForUpdate(
-                    owner: "altic-dev",
-                    repo: "Fluid-oss",
-                    includePrerelease: includePrerelease
-                )
-
-                // Update the last check date regardless of result
-                await MainActor.run {
-                    SettingsStore.shared.updateLastCheckDate()
-                }
-
-                if result.hasUpdate {
-                    DebugLogger.shared.info("✅ Update available: \(result.latestVersion)", source: "AppDelegate")
-
-                    guard !SimpleUpdater.shared.isUpdateInProgress else {
-                        DebugLogger.shared.debug(
-                            "Update prompt skipped because installation is already in progress",
-                            source: "AppDelegate"
-                        )
-                        return
-                    }
-
-                    // Check if user snoozed this version (clicked "Later")
-                    if SettingsStore.shared.shouldShowUpdatePrompt(forVersion: result.latestVersion) {
-                        // Show update notification on main thread
-                        await MainActor.run {
-                            self.showUpdateNotification(version: result.latestVersion)
-                        }
-                    } else {
-                        DebugLogger.shared.debug("Update prompt snoozed for \(result.latestVersion), skipping notification", source: "AppDelegate")
-                    }
-                } else {
-                    DebugLogger.shared.info("✅ App is up to date", source: "AppDelegate")
-                }
-            } catch {
-                // Silently log the error, don't bother the user with failed automatic checks
-                DebugLogger.shared.debug("Automatic update check failed: \(error.localizedDescription)", source: "AppDelegate")
-
-                // Still update last check date to avoid hammering the API on failure
-                await MainActor.run {
-                    SettingsStore.shared.updateLastCheckDate()
-                }
-            }
+            guard !Task.isCancelled, SettingsStore.shared.shouldCheckForUpdates() else { return }
+            SimpleUpdater.shared.checkForUpdatesAutomatically()
         }
-    }
-
-    @MainActor
-    private func showUpdateNotification(version: String) {
-        guard !SimpleUpdater.shared.isUpdateInProgress else { return }
-        DebugLogger.shared.info("Showing update notification for version \(version)", source: "AppDelegate")
-
-        self.updatePromptPresenter.presentFloatingPrompt(
-            title: "Update Available",
-            message: "FluidVoice \(version) is now available. The app will restart automatically after installation.",
-            actions: [
-                FloatingPromptAction(title: "Install Now") { [weak self] in
-                    DebugLogger.shared.info("User chose to install update now", source: "AppDelegate")
-                    #if DEBUG
-                    if !UpdatePromptSimulation.isEnabled { SettingsStore.shared.clearUpdateSnooze() }
-                    #else
-                    SettingsStore.shared.clearUpdateSnooze()
-                    #endif
-                    self?.checkForUpdatesManually()
-                },
-                FloatingPromptAction(title: "Later") {
-                    DebugLogger.shared.info("User postponed update for 24 hours", source: "AppDelegate")
-                    #if DEBUG
-                    if !UpdatePromptSimulation.isEnabled { SettingsStore.shared.snoozeUpdatePrompt(forVersion: version) }
-                    #else
-                    SettingsStore.shared.snoozeUpdatePrompt(forVersion: version)
-                    #endif
-                },
-            ]
-        )
     }
 
     @MainActor
@@ -572,9 +487,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         switch scenario {
         case "offer":
             guard !SimpleUpdater.shared.isUpdateInProgress else { return }
-            self.showUpdateNotification(version: "Simulation")
-        case "progress":
+            SimpleUpdater.shared.simulationHasUpdate = true
+            SimpleUpdater.shared.checkForUpdatesAutomatically()
+        case "manual":
+            SimpleUpdater.shared.simulationHasUpdate = true
             self.checkForUpdatesManually()
+        case "no-update":
+            SimpleUpdater.shared.simulationHasUpdate = false
+            self.checkForUpdatesManually()
+        case "progress":
+            Task { try? await SimpleUpdater.shared.checkAndUpdate(owner: "altic-dev", repo: "Fluid-oss") }
         case "failure":
             SimpleUpdater.shared.finishSimulatedUpdate()
             self.showUpdateAlert(title: "Update Check Failed", message: "Simulated download failure. No update was downloaded or installed.")

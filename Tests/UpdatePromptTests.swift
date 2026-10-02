@@ -121,7 +121,53 @@ private enum UpdatePromptTests {
         assert(postponed == 2)
         self.checkNewerOffers(presenter)
         self.checkFocusedOfferRefresh(presenter)
+        self.checkAutomaticOfferRemoval(presenter)
         print("PASS: main actor responsive; focus preserved; text completes; actions, direct cancellation, duplicate/newer offers, stale buttons, queue order, dismiss-all and recovery checks")
+    }
+
+    @MainActor
+    private static func checkAutomaticOfferRemoval(_ presenter: UpdatePromptPresenter) {
+        var answered: [String] = []
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let keyWindow = NSApp.keyWindow
+        let firstResponder = keyWindow?.firstResponder
+        presenter.presentFloatingPrompt(
+            title: "Update Available",
+            message: "Automatic version",
+            actions: [FloatingPromptAction(title: "Install Now") { answered.append("automatic") }],
+            isAutomaticUpdateOffer: true
+        )
+        let automatic = self.visiblePanel("Update Available")
+        let oldInstall = self.button("Install Now", in: automatic)
+        presenter.presentFloatingPrompt(title: "Update Check Failed", message: "Explicit error", actions: [FloatingPromptAction(title: "OK") { answered.append("error") }])
+        presenter.dismissAutomaticUpdateOffers()
+        assert(!automatic.isVisible && self.visiblePanel("Update Check Failed").isVisible)
+        oldInstall.performClick(nil)
+        assert(answered.isEmpty)
+        assert(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID)
+        assert(NSApp.keyWindow === keyWindow && keyWindow?.firstResponder === firstResponder)
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Queued automatic", actions: [FloatingPromptAction(title: "Install Now") { answered.append("queued automatic") }], isAutomaticUpdateOffer: true)
+        presenter.dismissAutomaticUpdateOffers()
+        self.visiblePanel("Update Check Failed").cancelOperation(nil)
+        assert(answered == ["error"])
+        assert(!NSApp.windows.contains { $0.isVisible && $0.title == "Update Available" })
+
+        // An explicit request promotes identical automatic content to a manual offer.
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Same version", actions: [FloatingPromptAction(title: "Install Now") { answered.append("old automatic") }], isAutomaticUpdateOffer: true)
+        let promotedFrom = self.visiblePanel("Update Available")
+        let staleAutomaticInstall = self.button("Install Now", in: promotedFrom)
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Same version", actions: [FloatingPromptAction(title: "Install Now") { answered.append("manual") }])
+        let manual = self.visiblePanel("Update Available")
+        assert(manual !== promotedFrom && !promotedFrom.isVisible)
+        presenter.presentFloatingPrompt(title: "Update Available", message: "Same version", actions: [FloatingPromptAction(title: "Install Now") { answered.append("downgraded automatic") }], isAutomaticUpdateOffer: true)
+        presenter.dismissAutomaticUpdateOffers()
+        assert(self.visiblePanel("Update Available") === manual)
+        staleAutomaticInstall.performClick(nil)
+        assert(answered == ["error"])
+        self.button("Install Now", in: manual).performClick(nil)
+        assert(answered == ["error", "manual"])
+        assert(NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID)
+        assert(NSApp.keyWindow === keyWindow && keyWindow?.firstResponder === firstResponder)
     }
 
     @MainActor
