@@ -256,6 +256,11 @@ final class GlobalHotkeyManager: NSObject {
     private var pasteLastTranscriptionCallback: (() -> Void)?
     private var hotkeyMode: HotkeyActivationMode = SettingsStore.shared.hotkeyMode
     private let automaticTapThresholdSeconds: TimeInterval = 0.4
+    private var holdToMuteKeyState = HoldToMuteKeyState()
+    private var muteRecordingGeneration: UInt64?
+    private var muteReleaseRecoveryTask: Task<Void, Never>?
+    // Event-replay tests opt out of consulting the real keyboard.
+    var holdToMuteChecksPhysicalKeyState = true
 
     private struct ModifierOnlyShortcutBehavior {
         let shortcut: HotkeyShortcut
@@ -503,6 +508,12 @@ final class GlobalHotkeyManager: NSObject {
         self.isRewriteRecordingProvider = isRewriteRecordingProvider
         self.isShortcutCaptureActiveProvider = isShortcutCaptureActiveProvider
         super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(self.holdSpaceSettingChanged),
+            name: .init("HoldSpaceToMuteChanged"),
+            object: nil
+        )
 
         self.initializeWithDelay()
     }
@@ -651,11 +662,11 @@ final class GlobalHotkeyManager: NSObject {
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: CGEventMask(eventMask),
-            callback: { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
+            callback: { _, type, event, refcon -> Unmanaged<CGEvent>? in
                 guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
                 let manager = Unmanaged<GlobalHotkeyManager>.fromOpaque(refcon)
                     .takeUnretainedValue()
-                return manager.handleKeyEvent(proxy: proxy, type: type, event: event)
+                return manager.handleKeyEvent(type: type, event: event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         )
@@ -777,9 +788,13 @@ final class GlobalHotkeyManager: NSObject {
         )
     }
 
-    private func handleKeyEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+    func handleKeyEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if let tapRecoveryResult = self.handleTapDisableEvent(type: type, event: event) {
             return tapRecoveryResult
+        }
+
+        if self.handleHoldToMute(type: type, event: event) {
+            return nil
         }
 
         if self.isShortcutCaptureActiveProvider?() ?? false {
@@ -1167,30 +1182,6 @@ final class GlobalHotkeyManager: NSObject {
 
         default:
             break
-        }
-
-        return Unmanaged.passUnretained(event)
-    }
-
-    private func handleTapDisableEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // macOS can temporarily disable event taps (e.g. timeouts, user input protection).
-        // If we don't immediately re-enable here, hotkeys will silently stop working until our
-        // periodic health check kicks in, and the OS may handle the key (e.g. system dictation).
-        guard type == .tapDisabledByTimeout || type == .tapDisabledByUserInput else {
-            return nil
-        }
-
-        let reason = (type == .tapDisabledByTimeout) ? "timeout" : "user input"
-        DebugLogger.shared.warning("Event tap disabled by \(reason) — attempting immediate re-enable", source: "GlobalHotkeyManager")
-        self.resetModifierOnlyShortcutTracking(reason: .tapDisabled)
-
-        if let tap = self.eventTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
-
-        if !self.isEventTapEnabled() {
-            DebugLogger.shared.warning("Event tap re-enable failed — recreating tap", source: "GlobalHotkeyManager")
-            self.setupGlobalHotkeyWithRetry()
         }
 
         return Unmanaged.passUnretained(event)
@@ -2038,6 +2029,131 @@ final class GlobalHotkeyManager: NSObject {
     deinit {
         initializationTask?.cancel()
         healthCheckTask?.cancel()
+        muteReleaseRecoveryTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
         cleanupEventTap()
+    }
+}
+
+extension GlobalHotkeyManager {
+    private func handleTapDisableEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // macOS can temporarily disable event taps (e.g. timeouts, user input protection).
+        // If we don't immediately re-enable here, hotkeys will silently stop working until our
+        // periodic health check kicks in, and the OS may handle the key (e.g. system dictation).
+        guard type == .tapDisabledByTimeout || type == .tapDisabledByUserInput else {
+            return nil
+        }
+
+        let reason = (type == .tapDisabledByTimeout) ? "timeout" : "user input"
+        DebugLogger.shared.warning("Event tap disabled by \(reason) — attempting immediate re-enable", source: "GlobalHotkeyManager")
+        self.resetModifierOnlyShortcutTracking(reason: .tapDisabled)
+        if self.holdToMuteChecksPhysicalKeyState {
+            self.reconcileHoldToMute(isPhysicallyDown: CGEventSource.keyState(.hidSystemState, key: 49))
+        }
+
+        if let tap = self.eventTap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+
+        if !self.isEventTapEnabled() {
+            DebugLogger.shared.warning("Event tap re-enable failed — recreating tap", source: "GlobalHotkeyManager")
+            self.setupGlobalHotkeyWithRetry()
+        }
+
+        return Unmanaged.passUnretained(event)
+    }
+
+    @objc private func holdSpaceSettingChanged() {
+        if !SettingsStore.shared.holdSpaceToMute {
+            self.muteRecordingGeneration = nil
+            self.asrService.setDictationMuted(false)
+        }
+    }
+
+    private var hasConflictingSpaceShortcut: Bool {
+        var shortcuts = self.primaryShortcuts + self.promptShortcutAssignments.map(\.shortcut)
+        if self.promptModeShortcutEnabled {
+            shortcuts.append(self.promptModeShortcut)
+        }
+        if self.rewriteModeShortcutEnabled {
+            shortcuts.append(self.rewriteModeShortcut)
+        }
+        if self.commandModeShortcutEnabled, let shortcut = self.commandModeShortcut {
+            shortcuts.append(shortcut)
+        }
+        shortcuts.append(SettingsStore.shared.cancelRecordingHotkeyShortcut)
+        if SettingsStore.shared.pasteLastTranscriptionShortcutEnabled,
+           let shortcut = SettingsStore.shared.pasteLastTranscriptionHotkeyShortcut
+        {
+            shortcuts.append(shortcut)
+        }
+        return shortcuts.contains { $0.matches(keyCode: 49, modifiers: []) }
+    }
+
+    private func handleHoldToMute(type: CGEventType, event: CGEvent) -> Bool {
+        guard event.getIntegerValueField(.keyboardEventKeycode) == 49 else { return false }
+        let wasOwned = self.holdToMuteKeyState.ownsSpace
+        let consumed: Bool
+        switch type {
+        case .keyDown:
+            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            let canBegin = SettingsStore.shared.holdSpaceToMute && self.asrService.isRunningOrStarting &&
+                !self.asrService.isDictionaryTrainingCaptureActive &&
+                (self.isDictateRecordingProvider?() ?? false) &&
+                !(self.isShortcutCaptureActiveProvider?() ?? false) &&
+                Self.modifierFlags(from: event.flags).isDisjoint(with: HotkeyShortcut.relevantModifierMask) &&
+                !self.hasConflictingSpaceShortcut
+            consumed = self.holdToMuteKeyState.keyDown(isRepeat: isRepeat, canBegin: canBegin)
+            if consumed, !isRepeat {
+                self.muteRecordingGeneration = self.asrService.dictationMuteGeneration
+                self.startMuteReleaseRecovery()
+            }
+        case .keyUp:
+            consumed = self.holdToMuteKeyState.keyUp()
+            self.muteRecordingGeneration = nil
+            self.muteReleaseRecoveryTask?.cancel()
+            self.muteReleaseRecoveryTask = nil
+        default:
+            return false
+        }
+        if consumed || wasOwned {
+            let muted = self.holdToMuteKeyState.ownsSpace &&
+                self.muteRecordingGeneration == self.asrService.dictationMuteGeneration &&
+                SettingsStore.shared.holdSpaceToMute
+            self.asrService.setDictationMuted(muted)
+        }
+        return consumed
+    }
+
+    /// Recover a missed key-up without unmuting while Space is physically held.
+    func reconcileHoldToMute(isPhysicallyDown: Bool) {
+        guard self.holdToMuteKeyState.ownsSpace else { return }
+        self.holdToMuteKeyState.reconcile(isPhysicallyDown: isPhysicallyDown)
+        if !self.holdToMuteKeyState.ownsSpace {
+            self.muteRecordingGeneration = nil
+            self.asrService.setDictationMuted(false)
+        }
+    }
+
+    private func startMuteReleaseRecovery() {
+        self.muteReleaseRecoveryTask?.cancel()
+        guard self.holdToMuteChecksPhysicalKeyState else { return }
+        self.muteReleaseRecoveryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
+                guard let self, self.holdToMuteKeyState.ownsSpace else { return }
+                self.reconcileHoldToMute(isPhysicallyDown: CGEventSource.keyState(.hidSystemState, key: 49))
+            }
+        }
+    }
+
+    private static func modifierFlags(from flags: CGEventFlags) -> NSEvent.ModifierFlags {
+        var result: NSEvent.ModifierFlags = []
+        if flags.contains(.maskSecondaryFn) { result.insert(.function) }
+        if flags.contains(.maskCommand) { result.insert(.command) }
+        if flags.contains(.maskAlternate) { result.insert(.option) }
+        if flags.contains(.maskControl) { result.insert(.control) }
+        if flags.contains(.maskShift) { result.insert(.shift) }
+        return result
     }
 }
