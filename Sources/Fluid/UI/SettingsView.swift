@@ -408,7 +408,7 @@ struct SettingsView: View {
                                         Text("Show update pop-ups")
                                             .font(self.theme.typography.bodyStrong)
                                             .foregroundStyle(self.settingsTitleText)
-                                        Text("When off, available updates appear here without automatic pop-ups.")
+                                        Text("When off, available updates appear in the top bar and here without automatic pop-ups.")
                                             .font(self.theme.typography.bodySmall)
                                             .foregroundStyle(self.settingsSecondaryText)
                                     }
