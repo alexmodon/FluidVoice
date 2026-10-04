@@ -245,6 +245,184 @@ final class HoldToMuteTests: XCTestCase {
         XCTAssertFalse(SettingsStore.shared.holdSpaceToMute)
     }
 
+    @MainActor
+    func testQuickTapMutesImmediatelyThenTypesExactlyOneSpaceOnRelease() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            let context = HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 0, rightClicks: 0, otherClicks: 0)
+            var captureCount = 0
+            manager.holdToMuteSpaceTap.contextProvider = {
+                if captureCount == 0 {
+                    XCTAssertTrue(asr.isDictationMuted, "Mute must precede context capture")
+                }
+                captureCount += 1
+                return context
+            }
+            var posted: [CGEvent] = []
+            manager.holdToMuteSpaceTap.postEvent = { _, event in
+                XCTAssertFalse(asr.isDictationMuted, "Resume must precede replay")
+                posted.append(event)
+            }
+            XCTAssertNil(try self.send(manager, type: .keyDown, at: 1_000_000_000))
+            XCTAssertTrue(asr.isDictationMuted)
+            XCTAssertTrue(posted.isEmpty)
+            XCTAssertNil(try self.send(manager, type: .keyUp, at: 1_100_000_000))
+            XCTAssertFalse(asr.isDictationMuted)
+            XCTAssertEqual(posted.map(\.type), [.keyDown, .keyUp])
+            for event in posted {
+                XCTAssertEqual(event.getIntegerValueField(.keyboardEventKeycode), 49)
+                XCTAssertEqual(event.getIntegerValueField(.keyboardEventAutorepeat), 0)
+                XCTAssertEqual(event.timestamp, 1_100_000_000)
+                var length = 0
+                var character: UniChar = 0
+                event.keyboardGetUnicodeString(maxStringLength: 1, actualStringLength: &length, unicodeString: &character)
+                XCTAssertEqual(length, 1)
+                XCTAssertEqual(character, 0x20)
+            }
+            _ = try self.send(manager, type: .keyUp, at: 1_110_000_000)
+            XCTAssertEqual(posted.count, 2)
+        }
+    }
+
+    @MainActor
+    func testLongHoldAndAutorepeatNeverTypeSpaces() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in XCTFail("A hold must not type") }
+            for repeatKey in [false, true] {
+                _ = try self.send(manager, type: .keyDown, at: 1_000_000_000)
+                if repeatKey {
+                    _ = try self.send(manager, type: .keyDown, isRepeat: true, at: 1_050_000_000)
+                }
+                XCTAssertTrue(asr.isDictationMuted)
+                let release: UInt64 = repeatKey ? 1_100_000_000 : 1_250_000_001
+                _ = try self.send(manager, type: .keyUp, at: release)
+                XCTAssertFalse(asr.isDictationMuted)
+            }
+        }
+    }
+
+    @MainActor
+    func testFastTypingFlushesSpaceBeforeNextLetterAndIgnoresPreviousLetterRelease() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            var posted: [CGEventType] = []
+            manager.holdToMuteSpaceTap.postEvent = { _, event in posted.append(event.type) }
+            _ = try self.send(manager, type: .keyDown, at: 1_000_000_000)
+            XCTAssertNotNil(try self.send(manager, type: .keyUp, at: 1_020_000_000, keyCode: 0, text: "a"))
+            XCTAssertTrue(posted.isEmpty)
+            XCTAssertNotNil(try self.send(manager, type: .keyDown, at: 1_050_000_000, keyCode: 11, text: "b"))
+            XCTAssertEqual(posted, [.keyDown, .keyUp], "Space must be posted before the next letter returns from the tap")
+            XCTAssertTrue(asr.isDictationMuted, "Typing does not release the physical mute hold")
+            _ = try self.send(manager, type: .keyDown, isRepeat: true, at: 1_060_000_000)
+            _ = try self.send(manager, type: .keyUp, at: 1_090_000_000)
+            XCTAssertEqual(posted.count, 2)
+            XCTAssertFalse(asr.isDictationMuted)
+        }
+    }
+
+    @MainActor
+    func testAppSwitchOrMouseClickCancelsPendingSpace() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            let original = HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 1, rightClicks: 2, otherClicks: 3)
+            let changed = [
+                HoldToMuteSpaceTap.Context(pid: 101, leftClicks: 1, rightClicks: 2, otherClicks: 3),
+                HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 2, rightClicks: 2, otherClicks: 3),
+                HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 1, rightClicks: 3, otherClicks: 3),
+                HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 1, rightClicks: 2, otherClicks: 4),
+                nil,
+            ]
+            var context: HoldToMuteSpaceTap.Context? = original
+            manager.holdToMuteSpaceTap.contextProvider = { context }
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in XCTFail("Destination changed") }
+            for destination in changed {
+                context = original
+                _ = try self.send(manager, type: .keyDown, at: 1_000_000_000)
+                context = destination
+                _ = try self.send(manager, type: .keyUp, at: 1_100_000_000)
+                XCTAssertFalse(asr.isDictationMuted)
+            }
+        }
+    }
+
+    @MainActor
+    func testNavigationAndModifierChangesCancelTapWithoutEndingMute() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in XCTFail("Interrupted gesture must not type") }
+            for keyCode: CGKeyCode in [48, 51, 123] {
+                _ = try self.send(manager, type: .keyDown, at: 1_000_000_000)
+                _ = try self.send(manager, type: .keyDown, at: 1_050_000_000, keyCode: keyCode, text: "\t")
+                XCTAssertTrue(asr.isDictationMuted)
+                _ = try self.send(manager, type: .keyUp, at: 1_100_000_000)
+            }
+            _ = try self.send(manager, type: .keyDown, at: 2_000_000_000)
+            _ = try self.send(manager, type: .flagsChanged, modifiers: .maskShift, at: 2_050_000_000, keyCode: 56, text: "")
+            XCTAssertTrue(asr.isDictationMuted)
+            _ = try self.send(manager, type: .keyUp, at: 2_100_000_000)
+            XCTAssertFalse(asr.isDictationMuted)
+        }
+    }
+
+    @MainActor
+    func testStoppedSessionDisabledSettingAndLostReleaseCannotReplaySpace() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in XCTFail("Cancelled tap must not type") }
+            for reason in 0..<4 {
+                SettingsStore.shared.holdSpaceToMute = true
+                asr.isRunning = true
+                _ = try self.send(manager, type: .keyDown, at: 1_000_000_000)
+                switch reason {
+                case 0: asr.isRunning = false
+                case 1:
+                    asr.isRunning = false
+                    asr.isRunning = true
+                case 2: SettingsStore.shared.holdSpaceToMute = false
+                default: manager.reconcileHoldToMute(isPhysicallyDown: false)
+                }
+                _ = try self.send(manager, type: .keyUp, at: 1_100_000_000)
+                XCTAssertFalse(asr.isDictationMuted)
+                asr.isRunning = false
+            }
+        }
+    }
+
+    @MainActor
+    func testRepeatedQuickTapsEachTypeOneSpace() throws {
+        try self.withMuteSetting {
+            let asr = ASRService()
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            let manager = self.manager(asr: asr)
+            var count = 0
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in count += 1 }
+            for index in 0..<10 {
+                let time = UInt64(index) * 200_000_000 + 1_000_000_000
+                _ = try self.send(manager, type: .keyDown, at: time)
+                _ = try self.send(manager, type: .keyUp, at: time + 100_000_000)
+            }
+            XCTAssertEqual(count, 20)
+        }
+    }
+
     private func hostTime(_ seconds: Double) -> UInt64 {
         AVAudioTime.hostTime(forSeconds: seconds)
     }
@@ -285,12 +463,20 @@ final class HoldToMuteTests: XCTestCase {
         )
         manager.setHotkeyMode(.toggle)
         manager.holdToMuteChecksPhysicalKeyState = false
+        manager.holdToMuteSpaceTap.contextProvider = {
+            HoldToMuteSpaceTap.Context(pid: 100, leftClicks: 0, rightClicks: 0, otherClicks: 0)
+        }
         return manager
     }
 
     @MainActor
-    private func send(_ manager: GlobalHotkeyManager, type: CGEventType, modifiers: CGEventFlags = [], isRepeat: Bool = false) throws -> CGEvent? {
-        let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 49, keyDown: type == .keyDown))
+    private func send(_ manager: GlobalHotkeyManager, type: CGEventType, modifiers: CGEventFlags = [], isRepeat: Bool = false, at timestamp: UInt64? = nil, keyCode: CGKeyCode = 49, text: String = " ") throws -> CGEvent? {
+        let event = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: type == .keyDown))
+        if let timestamp {
+            event.timestamp = timestamp
+        }
+        let characters = Array(text.utf16)
+        event.keyboardSetUnicodeString(stringLength: characters.count, unicodeString: characters)
         event.flags = modifiers
         event.setIntegerValueField(.keyboardEventAutorepeat, value: isRepeat ? 1 : 0)
         return withExtendedLifetime(event) {

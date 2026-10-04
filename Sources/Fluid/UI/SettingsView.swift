@@ -838,7 +838,7 @@ struct SettingsView: View {
 
                                     self.optionToggleRow(
                                         title: "Hold Space to Mute",
-                                        description: "During dictation, hold Space to mute and release to resume. Space works normally outside dictation. Other Space shortcuts take priority.",
+                                        description: "During dictation, hold Space to mute and release to resume. A quick tap types a space. Other Space shortcuts take priority.",
                                         isOn: self.$settings.holdSpaceToMute
                                     )
                                     Divider().opacity(0.2)
