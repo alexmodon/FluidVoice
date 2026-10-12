@@ -364,6 +364,7 @@ enum ASRExclusiveActivity: String, Equatable {
     case localAPI
     case meeting
     case modelMaintenance
+    case settingsRestore
 
     var displayName: String {
         switch self {
@@ -377,6 +378,8 @@ enum ASRExclusiveActivity: String, Equatable {
             return "meeting transcription"
         case .modelMaintenance:
             return "voice model maintenance"
+        case .settingsRestore:
+            return "settings import"
         }
     }
 }
@@ -388,11 +391,14 @@ struct ASRActivityLease: Equatable {
 
 enum ASRActivityError: LocalizedError {
     case activityInProgress(ASRExclusiveActivity)
+    case settingsRestoreUnavailable
 
     var errorDescription: String? {
         switch self {
         case let .activityInProgress(activity):
             return "Wait for the active \(activity.displayName) to finish."
+        case .settingsRestoreUnavailable:
+            return "Finish the current recording, transcription, microphone preview, or voice model operation, then import the backup again."
         }
     }
 }
@@ -691,6 +697,15 @@ final class ASRService: ObservableObject {
         self.isRunning || self.isStarting
     }
 
+    /// Change only the output mode of our existing capture, never another activity's audio.
+    var canSwitchOwnedDictationCaptureMode: Bool {
+        guard let lease = self.dictationActivityLease else { return false }
+        return lease.activity == .dictation && self.activeActivityLease == lease
+            && self.isRunning && !self.isStarting && !self.isStoppingFinalTranscription
+            && !self.isTerminating && !self.isDictionaryTrainingCaptureActive
+            && !self.recordingBufferHandoffGate.isActive && !self.recordingBufferHandoffGate.isRecovering
+    }
+
     func acquireExclusiveActivity(_ activity: ASRExclusiveActivity) throws -> ASRActivityLease {
         guard let activeActivityLease = self.activeActivityLease else {
             DictionaryAudioLearningService.shared.cancelForRecording()
@@ -700,6 +715,23 @@ final class ASRService: ObservableObject {
             return lease
         }
         throw ASRActivityError.activityInProgress(activeActivityLease.activity)
+    }
+
+    /// Reject before any backup writes, then reserve admission across its actor hop.
+    /// Keep the whole import together instead of changing the current capture's settings.
+    func beginSettingsBackupRestore() throws -> ASRActivityLease {
+        try Task.checkCancellation()
+        guard !self.isTerminating, self.activeActivityLease == nil,
+              !self.isRunning, !self.isStarting, !self.isStoppingFinalTranscription,
+              !self.recordingBufferHandoffGate.isRecovering,
+              !self.isMicrophonePreviewRequested, !self.isMicrophonePreviewActive,
+              !self.hasActiveModelDownload, !self.hasActiveModelPreparation,
+              self.deletingModelID == nil, self.providerResetDrain == nil,
+              !self.isCancellingModelPreparation, !self.isCancellingModelDownload,
+              !self.meetingModelResidency.isExclusive,
+              self.isAsrReady || (!self.isDownloadingModel && !self.isLoadingModel)
+        else { throw ASRActivityError.settingsRestoreUnavailable }
+        return try self.acquireExclusiveActivity(.settingsRestore)
     }
 
     func releaseExclusiveActivity(_ lease: ASRActivityLease) {
@@ -892,7 +924,6 @@ final class ASRService: ObservableObject {
     private var lastBoostHitTerm: String?
     private var hasPendingParakeetVocabularyReload: Bool = false
     private var vocabularyChangeObserver: NSObjectProtocol?
-    private var settingsBackupRestoreObserver: NSObjectProtocol?
     private var clamshellStateChangeObserver: NSObjectProtocol?
     private var inputDeviceAvailabilityChangeObserver: NSObjectProtocol?
 
@@ -973,6 +1004,24 @@ final class ASRService: ObservableObject {
         )
     }
 
+    func configureDictationModeSwitchForTesting(
+        ownedLease: ASRActivityLease?,
+        starting: Bool = false,
+        finalizing: Bool = false,
+        dictionaryTraining: Bool = false
+    ) {
+        self.dictationActivityLease = ownedLease
+        self.isStarting = starting
+        self.isStoppingFinalTranscription = finalizing
+        self.isDictionaryTrainingCaptureActive = dictionaryTraining
+    }
+
+    func beginDictationBufferDrainForTesting(recovering: Bool = false) -> (() -> Void)? {
+        guard let token = self.recordingBufferHandoffGate.begin() else { return nil }
+        if recovering { self.recordingBufferHandoffGate.markTimedOut(token) }
+        return { self.recordingBufferHandoffGate.complete(token) }
+    }
+
     func finishAudioRouteRecoveryTest() async {
         await self.cancelAudioRouteRecoveryAndWait()
         self.isRunning = false
@@ -1041,6 +1090,11 @@ final class ASRService: ObservableObject {
     @Published private(set) var deletingModelID: String?
     #if DEBUG
     var modelProvidersForTesting: [SettingsStore.SpeechModel: TranscriptionProvider] = [:]
+
+    func prepareProviderRecoveryForTesting(_ provider: TranscriptionProvider, modelsAlreadyCached: Bool) async throws {
+        try await self.prepareProviderWithRecovery(provider: provider, modelsAlreadyCached: modelsAlreadyCached, progressHandler: { _ in })
+    }
+
     #endif
 
     var hasActiveModelPreparation: Bool {
@@ -1151,7 +1205,7 @@ final class ASRService: ObservableObject {
             }
         case .appleSpeech:
             return self.getAppleSpeechProvider()
-        case .parakeetTDT, .parakeetTDTv2:
+        case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico:
             return self.getFluidAudioProvider()
         case .parakeetRealtime:
             return self.getParakeetRealtimeProvider()
@@ -1270,7 +1324,7 @@ final class ASRService: ObservableObject {
 
     /// Gets a provider for a specific model (without changing the active selection)
     /// Used for downloading models without switching the active model.
-    private func getProvider(for model: SettingsStore.SpeechModel) -> TranscriptionProvider {
+    private func getProvider(for model: SettingsStore.SpeechModel, updateWeights: Bool = false) -> TranscriptionProvider {
         #if DEBUG
         if let injected = self.modelProvidersForTesting[model] { return injected }
         #endif
@@ -1283,9 +1337,9 @@ final class ASRService: ObservableObject {
             }
         case .appleSpeech:
             return AppleSpeechProvider()
-        case .parakeetTDT, .parakeetTDTv2:
+        case .parakeetTDT, .parakeetTDTv2, .fluidParakeetMini, .fluidParakeetPico:
             // Create a new provider configured for the specific model
-            return FluidAudioProvider(modelOverride: model, configureWordBoosting: false)
+            return FluidAudioProvider(modelOverride: model, configureWordBoosting: false, updateCompactWeights: updateWeights)
         case .parakeetRealtime:
             return ParakeetRealtimeProvider()
         case .cohereTranscribeSixBit:
@@ -1308,8 +1362,31 @@ final class ASRService: ObservableObject {
     func downloadModel(
         _ model: SettingsStore.SpeechModel,
         source: AnalyticsModelDownloadSource = .settings,
+        updateWeights: Bool = false,
         progressHandler: ((Double) -> Void)?
     ) async throws {
+        try Task.checkCancellation()
+        let updateLease: ASRActivityLease?
+        if updateWeights {
+            guard model == .fluidParakeetMini || model == .fluidParakeetPico else {
+                throw NSError(domain: "ASRService", code: -2003, userInfo: [NSLocalizedDescriptionKey: "Only Mini and Pico support weight updates."])
+            }
+            guard !self.isTerminating, !self.isRunning, !self.isStarting, !self.isStoppingFinalTranscription,
+                  !self.recordingBufferHandoffGate.isActive, !self.recordingBufferHandoffGate.isRecovering,
+                  !self.isMicrophonePreviewRequested, !self.isMicrophonePreviewActive, !self.isDictionaryTrainingCaptureActive,
+                  self.providerResetDrain == nil, !self.isCancellingModelPreparation, !self.isCancellingModelDownload,
+                  !self.meetingModelResidency.isExclusive
+            else {
+                throw ASRActivityError.activityInProgress(self.activeExclusiveActivity ?? .modelMaintenance)
+            }
+            updateLease = try self.acquireExclusiveActivity(.modelMaintenance)
+        } else {
+            updateLease = nil
+        }
+        defer { if let updateLease { self.releaseExclusiveActivity(updateLease) } }
+        guard self.activeExclusiveActivity != .settingsRestore else {
+            throw ASRActivityError.activityInProgress(.settingsRestore)
+        }
         let admission = try self.meetingModelResidency.beginOperation(owner: "speech", modelID: model.id)
         defer { self.meetingModelResidency.endOperation(admission) }
         if self.isMeetingASRPreparationClaimed {
@@ -1324,7 +1401,7 @@ final class ASRService: ObservableObject {
         }
 
         let operationID = UUID()
-        let provider = self.getProvider(for: model)
+        let provider = self.getProvider(for: model, updateWeights: updateWeights)
         self.modelDownloadOperationID = operationID
         self.downloadingModelId = model.id
         self.downloadProgress = nil
@@ -1353,11 +1430,12 @@ final class ASRService: ObservableObject {
                         )
                     }
                 })
-                try Task.checkCancellation()
+                if !updateWeights { try Task.checkCancellation() }
                 DebugLogger.shared.info("Model download completed: \(model.displayName)", source: "ASRService")
             } catch {
+                if ParakeetArchiveDownloader.isCleanupFailure(error) { throw error }
                 let wasCancelled = Task.isCancelled || Self.isModelPreparationCancellation(error)
-                if wasCancelled,
+                if wasCancelled, !updateWeights,
                    provider.shouldClearCacheAfterCancellation,
                    provider.modelsExistOnDisk() == false
                 {
@@ -1379,6 +1457,7 @@ final class ASRService: ObservableObject {
                 self.downloadProgress = nil
                 self.modelPreparationPhase = nil
                 self.isCancellingModelDownload = false
+                SpeechModelInstallationSnapshot.shared.refresh()
             }
         }
 
@@ -1388,11 +1467,22 @@ final class ASRService: ObservableObject {
             } onCancel: {
                 task.cancel()
             }
+            if updateWeights, SettingsStore.shared.selectedSpeechModel == model {
+                // Release the update lease only after progress and operation cleanup;
+                // the normal deferred reset then retires the old active checkpoint.
+                self.providerResetPending = true
+            }
             self.finishModelDownloadAnalytics(operationID: operationID, outcome: .succeeded)
         } catch is CancellationError {
             self.finishModelDownloadAnalytics(operationID: operationID, outcome: .cancelled)
             throw CancellationError()
         } catch {
+            if updateWeights, SettingsStore.shared.selectedSpeechModel == model,
+               let failure = error as? ParakeetArchiveDownloader.DownloadError,
+               case .replacementCleanupFailed = failure
+            {
+                self.providerResetPending = true
+            }
             self.finishModelDownloadAnalytics(operationID: operationID, outcome: .failed)
             throw error
         }
@@ -1441,10 +1531,16 @@ final class ASRService: ObservableObject {
         }
         let resetDrainID = UUID()
         let executor = self.transcriptionExecutor
-        let resetDrainTask = Task { await executor.cancelAndAwaitPending() }
+        let resetDrainTask = Task { @MainActor [weak self] in
+            await executor.cancelAndAwaitPending()
+            // A completed handle must not leave future imports permanently busy.
+            if self?.providerResetDrain?.id == resetDrainID {
+                self?.providerResetDrain = nil
+            }
+        }
         self.providerResetDrain = (resetDrainID, resetDrainTask)
-        // Keep the task handle until its provider has stopped and cancellation cleanup has
-        // completed. The next ensureAsrReady call waits for it before touching the same cache.
+        // ensureAsrReady joins this executor drain. The retiring preparation task
+        // separately remains retained until its provider cancellation cleanup finishes.
         self.ensureReadyProviderKey = nil
         self.ensureReadyOperationID = nil
         self.lastBoostHitTerm = nil
@@ -2207,19 +2303,6 @@ final class ASRService: ObservableObject {
                 self?.handleParakeetVocabularyDidChange()
             }
         }
-        self.settingsBackupRestoreObserver = NotificationCenter.default.addObserver(
-            forName: .settingsBackupDidRestore,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.scheduleAudioRouteRecovery(
-                    reason: "settings backup restored",
-                    requiresIdlePrewarm: true,
-                    reconcilesInputSelection: true
-                )
-            }
-        }
         self.clamshellStateChangeObserver = NotificationCenter.default.addObserver(
             forName: .clamshellStateDidChange,
             object: nil,
@@ -2247,9 +2330,6 @@ final class ASRService: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = self.engineConfigurationChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = self.settingsBackupRestoreObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = self.clamshellStateChangeObserver {
@@ -2282,6 +2362,20 @@ final class ASRService: ObservableObject {
 
         self.scheduleAudioRouteRecovery(
             reason: "input availability changed:\(deviceID ?? 0)",
+            requiresIdlePrewarm: true,
+            reconcilesInputSelection: true
+        )
+    }
+
+    @MainActor
+    func handleSettingsBackupDidRestore() {
+        // BackupService calls this synchronously while settingsRestore holds admission.
+        // Its release consumes the pending reset before a new capture can enter.
+        // Downloaded model files remain intact.
+        self.resetTranscriptionProvider()
+        SpeechModelInstallationSnapshot.shared.refresh()
+        self.scheduleAudioRouteRecovery(
+            reason: "settings backup restored",
             requiresIdlePrewarm: true,
             reconcilesInputSelection: true
         )
@@ -2451,6 +2545,8 @@ final class ASRService: ObservableObject {
             } else {
                 exists = self.getAppleSpeechProvider().modelsExistOnDisk()
             }
+        } else if model == .fluidParakeetMini || model == .fluidParakeetPico {
+            exists = (try? await self.modelArtifactsExist(provider: self.transcriptionProvider)) ?? false
         } else {
             exists = model.isInstalled
         }
@@ -2496,6 +2592,7 @@ final class ASRService: ObservableObject {
               self.isRunning == false,
               self.isStarting == false,
               self.activeExclusiveActivity != .meeting,
+              self.activeExclusiveActivity != .settingsRestore,
               self.isTerminating == false
         else { return }
 
@@ -2514,6 +2611,7 @@ final class ASRService: ObservableObject {
                   self.isRunning == false,
                   self.isStarting == false,
                   self.activeExclusiveActivity != .meeting,
+                  self.activeExclusiveActivity != .settingsRestore,
                   self.isTerminating == false,
                   Task.isCancelled == false
             else {
@@ -2533,6 +2631,7 @@ final class ASRService: ObservableObject {
               self.isRunning == false,
               self.isStarting == false,
               self.activeExclusiveActivity != .meeting,
+              self.activeExclusiveActivity != .settingsRestore,
               self.isTerminating == false,
               Task.isCancelled == false
         else {
@@ -2559,6 +2658,7 @@ final class ASRService: ObservableObject {
                   self.isRunning == false,
                   self.isStarting == false,
                   self.activeExclusiveActivity != .meeting,
+                  self.activeExclusiveActivity != .settingsRestore,
                   self.isTerminating == false
             else { throw CancellationError() }
             _ = try await self.directAudioLifecycleController.start(
@@ -2571,6 +2671,7 @@ final class ASRService: ObservableObject {
                   self.isRunning == false,
                   self.isStarting == false,
                   self.activeExclusiveActivity != .meeting,
+                  self.activeExclusiveActivity != .settingsRestore,
                   self.isTerminating == false
             else { throw CancellationError() }
             self.activeAudioCaptureBackend = .directCoreAudio
@@ -4013,7 +4114,8 @@ final class ASRService: ObservableObject {
                 guard let self, !self.isTerminating,
                       SettingsStore.shared.selectedSpeechModel.id == model.id else { return }
                 // Never download a missing model just to restore residency.
-                guard self.transcriptionProvider.modelsExistOnDisk() else { return }
+                guard try await self.modelArtifactsExist(provider: self.transcriptionProvider),
+                      !self.isTerminating, SettingsStore.shared.selectedSpeechModel.id == model.id else { return }
                 try await self.ensureAsrReady()
                 if SettingsStore.shared.selectedSpeechModel.id != model.id,
                    let lease = self.activeActivityLease
@@ -6304,6 +6406,9 @@ final class ASRService: ObservableObject {
         progressHandler: ((Double) -> Void)? = nil
     ) async throws {
         try Task.checkCancellation()
+        guard self.activeExclusiveActivity != .settingsRestore else {
+            throw ASRActivityError.activityInProgress(.settingsRestore)
+        }
         let admission = try self.meetingModelResidency.beginOperation(
             owner: "speech", modelID: SettingsStore.shared.selectedSpeechModel.id
         )
@@ -6357,6 +6462,9 @@ final class ASRService: ObservableObject {
             }
         }
 
+        guard self.activeExclusiveActivity != .settingsRestore else {
+            throw ASRActivityError.activityInProgress(.settingsRestore)
+        }
         guard self.deletingModelID == nil, SettingsStore.shared.selectedSpeechModel == model else {
             throw CancellationError()
         }
@@ -6398,6 +6506,15 @@ final class ASRService: ObservableObject {
         }
     }
 
+    private func modelArtifactsExist(provider: TranscriptionProvider) async throws -> Bool {
+        #if arch(arm64)
+        if let compactProvider = provider as? FluidAudioProvider {
+            return try await compactProvider.refreshModelsExistOnDiskAsync()
+        }
+        #endif
+        return provider.modelsExistOnDisk()
+    }
+
     private func performEnsureAsrReady(
         provider: TranscriptionProvider,
         operationID: UUID,
@@ -6418,13 +6535,17 @@ final class ASRService: ObservableObject {
             return
         }
 
+        defer { SpeechModelInstallationSnapshot.shared.refresh() }
+
         // If the flag is set but provider isn't ready (e.g., provider switch without reset), re-init.
         if self.isAsrReady, !provider.isReady {
             DebugLogger.shared.debug("ASR marked ready but provider not ready; re-initializing", source: "ASRService")
         }
 
         self.isAsrReady = false
-        let modelsAlreadyCached = provider.modelsExistOnDisk()
+        let modelsAlreadyCached = try await self.modelArtifactsExist(provider: provider)
+        try Task.checkCancellation()
+        guard self.ensureReadyOperationID == operationID else { throw CancellationError() }
 
         let totalStartTime = Date()
         do {
@@ -6557,7 +6678,7 @@ final class ASRService: ObservableObject {
             }
             throw CancellationError()
         } catch {
-            if Task.isCancelled || Self.isModelPreparationCancellation(error) {
+            if !ParakeetArchiveDownloader.isCleanupFailure(error), Task.isCancelled || Self.isModelPreparationCancellation(error) {
                 self.finishModelDownloadAnalytics(operationID: operationID, outcome: .cancelled)
                 if provider.shouldClearCacheAfterCancellation,
                    provider.modelsExistOnDisk() == false
@@ -6694,8 +6815,16 @@ final class ASRService: ObservableObject {
             )
             return
         } catch {
+            // Staging cleanup failure must not delete a successfully published cache
+            // or hide its repair path when cancellation was also requested.
+            if ParakeetArchiveDownloader.isCleanupFailure(error) { throw error }
             if Task.isCancelled || Self.isModelPreparationCancellation(error) {
                 throw CancellationError()
+            }
+            if let compact = provider as? FluidAudioProvider, compact.preservesInstalledCompactWeights {
+                // Repairing by deletion could silently upgrade an installed older
+                // checkpoint. Explicit Update/Delete owns that choice instead.
+                throw error
             }
             firstError = error
             DebugLogger.shared.error("ASRService: First prepare attempt for \(provider.name) failed after \(String(format: "%.2f", Date().timeIntervalSince(start)))s", source: "ASRService")
@@ -6734,6 +6863,7 @@ final class ASRService: ObservableObject {
         do {
             try await provider.prepare(progressHandler: progressHandler)
         } catch {
+            if ParakeetArchiveDownloader.isCleanupFailure(error) { throw error }
             if Task.isCancelled || Self.isModelPreparationCancellation(error) {
                 throw CancellationError()
             }
@@ -6813,6 +6943,7 @@ final class ASRService: ObservableObject {
         let isActive = SettingsStore.shared.selectedSpeechModel == model
         defer {
             self.deletingModelID = nil
+            SpeechModelInstallationSnapshot.shared.refresh()
             self.releaseExclusiveActivity(activityLease)
         }
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
