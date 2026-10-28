@@ -57,6 +57,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let pressAndHoldMode: Bool
     let hotkeyMode: HotkeyActivationMode?
     var holdSpaceToMute: Bool? = nil
+    var spaceMuteMode: String? = nil
     let enableStreamingPreview: Bool
     // Optional so backups created before the silence filter still decode.
     let skipSilentRecordingsEnabled: Bool?

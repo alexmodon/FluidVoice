@@ -2906,6 +2906,11 @@ struct ContentView: View {
     }
 
     private func setActiveRecordingMode(_ mode: ActiveRecordingMode) {
+        // A live switch resumes capture for the new mode. On stop (.none),
+        // ASR keeps the mute boundary until the final audio packet is drained.
+        if mode != .dictate, mode != .none {
+            self.hotkeyManager?.cancelDictationMute()
+        }
         if mode != .dictate, mode != .promptMode {
             self.clearActiveDictationShortcutState()
         }

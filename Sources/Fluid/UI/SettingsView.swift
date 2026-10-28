@@ -837,10 +837,30 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
-                                        title: "Hold Space to Mute",
-                                        description: "During dictation, hold Space to mute and release to resume. A quick tap types a space. Other Space shortcuts take priority.",
+                                        title: "Mute with Space",
+                                        description: "During dictation only. Other Space shortcuts take priority.",
                                         isOn: self.$settings.holdSpaceToMute
                                     )
+                                    if self.settings.holdSpaceToMute {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text("Mute behavior")
+                                                    .font(.system(size: 13, weight: .medium))
+                                                Text(self.settings.spaceMuteMode.description)
+                                                    .font(.system(size: 12))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            Picker("Mute behavior", selection: self.$settings.spaceMuteMode) {
+                                                ForEach(SpaceMuteMode.allCases) { mode in
+                                                    Text(mode.displayName).tag(mode)
+                                                }
+                                            }
+                                            .labelsHidden()
+                                            .pickerStyle(.menu)
+                                            .frame(width: 120)
+                                        }
+                                    }
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(

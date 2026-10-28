@@ -1,5 +1,24 @@
 import AppKit
 
+nonisolated enum SpaceMuteMode: String, CaseIterable, Identifiable {
+    case hold
+    case toggle
+
+    var id: String { self.rawValue }
+    var displayName: String { self == .hold ? "Hold" : "Toggle" }
+    var resumeInstruction: String {
+        self == .hold ? "Release Space to resume dictation" : "Press Space again to resume dictation"
+    }
+    var description: String {
+        switch self {
+        case .hold:
+            return "Hold Space to mute and release to resume. A quick tap types a space."
+        case .toggle:
+            return "Press Space to mute, then press it again to resume. Space does not type while dictating."
+        }
+    }
+}
+
 /// Keeps ownership until key-up, even if the recording stops or the setting changes.
 /// This prevents a held Space from typing repeats into the destination application.
 nonisolated struct HoldToMuteKeyState {

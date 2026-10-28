@@ -423,6 +423,201 @@ final class HoldToMuteTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testToggleMutesOnPressStaysMutedAfterReleaseAndResumesOnNextPress() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            manager.holdToMuteSpaceTap.postEvent = { _, _ in XCTFail("A toggle must not type a space") }
+            for _ in 0..<3 {
+                XCTAssertNil(try self.send(manager, type: .keyDown))
+                XCTAssertTrue(asr.isDictationMuted)
+                XCTAssertTrue(NotchContentState.shared.isDictationMuted)
+                for _ in 0..<20 {
+                    XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+                    XCTAssertTrue(asr.isDictationMuted)
+                }
+                XCTAssertNil(try self.send(manager, type: .keyUp))
+                XCTAssertTrue(asr.isDictationMuted, "Release must not resume audio")
+                XCTAssertNil(try self.send(manager, type: .keyDown))
+                XCTAssertFalse(asr.isDictationMuted, "The second press resumes immediately")
+                XCTAssertFalse(NotchContentState.shared.isDictationMuted)
+                XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+                XCTAssertFalse(asr.isDictationMuted)
+                XCTAssertNil(try self.send(manager, type: .keyUp))
+                XCTAssertFalse(asr.isDictationMuted)
+            }
+        }
+    }
+
+    @MainActor
+    func testToggleMissedReleaseRecoveryKeepsMuteUntilNextPress() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            _ = try self.send(manager, type: .keyDown)
+            manager.reconcileHoldToMute(isPhysicallyDown: true)
+            XCTAssertTrue(asr.isDictationMuted)
+            manager.reconcileHoldToMute(isPhysicallyDown: false)
+            XCTAssertTrue(asr.isDictationMuted)
+            XCTAssertNil(try self.send(manager, type: .keyDown))
+            XCTAssertFalse(asr.isDictationMuted)
+            _ = try self.send(manager, type: .keyUp)
+        }
+    }
+
+    @MainActor
+    func testToggleStopClearsMuteAndStaleEventsDoNotMuteNextRecording() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            _ = try self.send(manager, type: .keyDown)
+            XCTAssertTrue(asr.isDictationMuted)
+            asr.isRunning = false
+            XCTAssertFalse(asr.isDictationMuted)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+            XCTAssertNil(try self.send(manager, type: .keyUp))
+            XCTAssertFalse(asr.isDictationMuted)
+            _ = try self.send(manager, type: .keyDown)
+            XCTAssertTrue(asr.isDictationMuted, "A fresh press belongs to the new recording")
+            _ = try self.send(manager, type: .keyUp)
+        }
+    }
+
+    @MainActor
+    func testToggleLeavesIdleTypingOtherModesAndShortcutCaptureAlone() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            XCTAssertNotNil(try self.send(manager, type: .keyDown))
+            XCTAssertNotNil(try self.send(manager, type: .keyUp))
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            for other in [self.manager(asr: asr, isDictation: false), self.manager(asr: asr, isCapturingShortcut: true)] {
+                XCTAssertNotNil(try self.send(other, type: .keyDown))
+                XCTAssertNotNil(try self.send(other, type: .keyUp))
+                XCTAssertFalse(asr.isDictationMuted)
+            }
+        }
+    }
+
+    @MainActor
+    func testTogglePreservesMuteWhileTypingAndUsingSpaceChords() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            _ = try self.send(manager, type: .keyDown)
+            _ = try self.send(manager, type: .keyUp)
+            XCTAssertNotNil(try self.send(manager, type: .keyDown, keyCode: 0, text: "a"))
+            for modifier: CGEventFlags in [.maskCommand, .maskAlternate, .maskControl, .maskShift, .maskSecondaryFn] {
+                XCTAssertNotNil(try self.send(manager, type: .keyDown, modifiers: modifier))
+                XCTAssertNotNil(try self.send(manager, type: .keyUp, modifiers: modifier))
+                XCTAssertTrue(asr.isDictationMuted)
+            }
+            _ = try self.send(manager, type: .keyDown)
+            XCTAssertFalse(asr.isDictationMuted)
+            _ = try self.send(manager, type: .keyUp)
+        }
+    }
+
+    @MainActor
+    func testToggleConfiguredSpaceShortcutTakesPriority() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            manager.updatePrimaryShortcuts([HotkeyShortcut(keyCode: 49, modifierFlags: [])])
+            _ = try self.send(manager, type: .keyDown)
+            XCTAssertFalse(asr.isDictationMuted)
+        }
+    }
+
+    @MainActor
+    func testChangingMuteModeOrDisablingItClearsLatchWithoutLeakingRepeats() throws {
+        for mode in SpaceMuteMode.allCases {
+            try self.withMuteSetting(mode: mode) {
+                let asr = ASRService()
+                let manager = self.manager(asr: asr)
+                asr.isRunning = true
+                defer { asr.isRunning = false }
+                _ = try self.send(manager, type: .keyDown)
+                SettingsStore.shared.spaceMuteMode = mode == .hold ? .toggle : .hold
+                XCTAssertFalse(asr.isDictationMuted)
+                XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+                XCTAssertFalse(asr.isDictationMuted)
+                XCTAssertNil(try self.send(manager, type: .keyUp))
+                _ = try self.send(manager, type: .keyDown)
+                XCTAssertTrue(asr.isDictationMuted)
+                SettingsStore.shared.holdSpaceToMute = false
+                XCTAssertFalse(asr.isDictationMuted)
+                XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+                XCTAssertNil(try self.send(manager, type: .keyUp))
+                XCTAssertNotNil(try self.send(manager, type: .keyDown))
+            }
+        }
+    }
+
+    @MainActor
+    func testLeavingDictationClearsToggleButKeepsRepeatOwnership() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let asr = ASRService()
+            let manager = self.manager(asr: asr)
+            asr.isRunning = true
+            defer { asr.isRunning = false }
+            _ = try self.send(manager, type: .keyDown)
+            XCTAssertTrue(asr.isDictationMuted)
+            manager.cancelDictationMute()
+            XCTAssertFalse(asr.isDictationMuted)
+            XCTAssertNil(try self.send(manager, type: .keyDown, isRepeat: true))
+            XCTAssertFalse(asr.isDictationMuted)
+            XCTAssertNil(try self.send(manager, type: .keyUp))
+        }
+    }
+
+    @MainActor
+    func testMuteModeBackupDecodesToggleAndOlderBackups() throws {
+        try self.withMuteSetting(mode: .toggle) {
+            let payload = SettingsStore.shared.makeBackupPayload()
+            let data = try JSONEncoder().encode(payload)
+            XCTAssertEqual(try JSONDecoder().decode(SettingsBackupPayload.self, from: data).spaceMuteMode, "toggle")
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            legacy.removeValue(forKey: "spaceMuteMode")
+            let oldData = try JSONSerialization.data(withJSONObject: legacy)
+            XCTAssertNil(try JSONDecoder().decode(SettingsBackupPayload.self, from: oldData).spaceMuteMode)
+        }
+    }
+
+    @MainActor
+    func testMuteModeDefaultsToHoldAndPersistsToggle() {
+        let defaults = UserDefaults.standard
+        let prior = defaults.object(forKey: "SpaceMuteMode")
+        defer {
+            if let prior {
+                defaults.set(prior, forKey: "SpaceMuteMode")
+            } else {
+                defaults.removeObject(forKey: "SpaceMuteMode")
+            }
+        }
+        defaults.removeObject(forKey: "SpaceMuteMode")
+        XCTAssertEqual(SettingsStore.shared.spaceMuteMode, .hold)
+        defaults.set("future-unknown-mode", forKey: "SpaceMuteMode")
+        XCTAssertEqual(SettingsStore.shared.spaceMuteMode, .hold)
+        SettingsStore.shared.spaceMuteMode = .toggle
+        XCTAssertEqual(defaults.string(forKey: "SpaceMuteMode"), "toggle")
+        XCTAssertEqual(SettingsStore.shared.spaceMuteMode, .toggle)
+        XCTAssertEqual(SpaceMuteMode.toggle.resumeInstruction, "Press Space again to resume dictation")
+    }
+
     private func hostTime(_ seconds: Double) -> UInt64 {
         AVAudioTime.hostTime(forSeconds: seconds)
     }
@@ -439,15 +634,20 @@ final class HoldToMuteTests: XCTestCase {
     }
 
     @MainActor
-    private func withMuteSetting(_ body: () throws -> Void) rethrows {
+    private func withMuteSetting(mode: SpaceMuteMode = .hold, _ body: () throws -> Void) rethrows {
         let previous = SettingsStore.shared.holdSpaceToMute
-        defer { SettingsStore.shared.holdSpaceToMute = previous }
+        let previousMode = SettingsStore.shared.spaceMuteMode
+        defer {
+            SettingsStore.shared.holdSpaceToMute = previous
+            SettingsStore.shared.spaceMuteMode = previousMode
+        }
         SettingsStore.shared.holdSpaceToMute = true
+        SettingsStore.shared.spaceMuteMode = mode
         try body()
     }
 
     @MainActor
-    private func manager(asr: ASRService, isDictation: Bool = true) -> GlobalHotkeyManager {
+    private func manager(asr: ASRService, isDictation: Bool = true, isCapturingShortcut: Bool = false) -> GlobalHotkeyManager {
         let manager = GlobalHotkeyManager(
             asrService: asr,
             primaryShortcuts: [HotkeyShortcut(keyCode: 61, modifierFlags: [])],
@@ -459,7 +659,8 @@ final class HoldToMuteTests: XCTestCase {
             rewriteModeShortcutEnabled: false,
             startRecordingCallback: {},
             stopAndProcessCallback: {},
-            isDictateRecordingProvider: { isDictation }
+            isDictateRecordingProvider: { isDictation },
+            isShortcutCaptureActiveProvider: { isCapturingShortcut }
         )
         manager.setHotkeyMode(.toggle)
         manager.holdToMuteChecksPhysicalKeyState = false

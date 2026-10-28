@@ -2066,11 +2066,15 @@ extension GlobalHotkeyManager {
     }
 
     @objc private func holdSpaceSettingChanged() {
-        if !SettingsStore.shared.holdSpaceToMute {
-            self.holdToMuteSpaceTap.cancel()
-            self.muteRecordingGeneration = nil
-            self.asrService.setDictationMuted(false)
-        }
+        self.cancelDictationMute()
+    }
+
+    func cancelDictationMute() {
+        // Changing the behavior or leaving dictation ends the previous gesture.
+        // Keep key ownership until release so repeats cannot reach the text field.
+        self.holdToMuteSpaceTap.cancel()
+        self.muteRecordingGeneration = nil
+        self.asrService.setDictationMuted(false)
     }
 
     private func hasConfiguredShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
@@ -2101,7 +2105,40 @@ extension GlobalHotkeyManager {
             !(self.isShortcutCaptureActiveProvider?() ?? false)
     }
 
+    private func canBeginSpaceMute(modifiers: NSEvent.ModifierFlags) -> Bool {
+        SettingsStore.shared.holdSpaceToMute && self.asrService.isRunningOrStarting &&
+            !self.asrService.isDictionaryTrainingCaptureActive &&
+            (self.isDictateRecordingProvider?() ?? false) &&
+            !(self.isShortcutCaptureActiveProvider?() ?? false) &&
+            modifiers.isDisjoint(with: HotkeyShortcut.relevantModifierMask) &&
+            !self.hasConfiguredShortcut(keyCode: 49, modifiers: [])
+    }
+
+    private func handleToggleMute(type: CGEventType, event: CGEvent) -> Bool {
+        guard event.getIntegerValueField(.keyboardEventKeycode) == 49 else { return false }
+        if type == .keyUp {
+            self.muteReleaseRecoveryTask?.cancel()
+            self.muteReleaseRecoveryTask = nil
+            return self.holdToMuteKeyState.keyUp()
+        }
+        guard type == .keyDown else { return false }
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        let consumed = self.holdToMuteKeyState.keyDown(
+            isRepeat: isRepeat,
+            canBegin: self.canBeginSpaceMute(modifiers: Self.modifierFlags(from: event.flags))
+        )
+        if consumed, !isRepeat {
+            // ASR owns the latch and resets it when recording stops or is cancelled.
+            self.asrService.setDictationMuted(!self.asrService.isDictationMuted)
+            self.startMuteReleaseRecovery()
+        }
+        return consumed
+    }
+
     private func handleHoldToMute(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy?) -> Bool {
+        if SettingsStore.shared.spaceMuteMode == .toggle {
+            return self.handleToggleMute(type: type, event: event)
+        }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let modifiers = Self.modifierFlags(from: event.flags)
         guard keyCode == 49, type == .keyDown || type == .keyUp else {
@@ -2121,12 +2158,7 @@ extension GlobalHotkeyManager {
         switch type {
         case .keyDown:
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            let canBegin = SettingsStore.shared.holdSpaceToMute && self.asrService.isRunningOrStarting &&
-                !self.asrService.isDictionaryTrainingCaptureActive &&
-                (self.isDictateRecordingProvider?() ?? false) &&
-                !(self.isShortcutCaptureActiveProvider?() ?? false) &&
-                modifiers.isDisjoint(with: HotkeyShortcut.relevantModifierMask) &&
-                !self.hasConfiguredShortcut(keyCode: 49, modifiers: [])
+            let canBegin = self.canBeginSpaceMute(modifiers: modifiers)
             consumed = self.holdToMuteKeyState.keyDown(isRepeat: isRepeat, canBegin: canBegin)
             self.holdToMuteSpaceTap.cancel()
             if consumed, !isRepeat {
@@ -2158,14 +2190,16 @@ extension GlobalHotkeyManager {
         return consumed
     }
 
-    /// Recover a missed key-up without unmuting while Space is physically held.
+    /// Recover key ownership after a missed release. Toggle mute stays latched.
     func reconcileHoldToMute(isPhysicallyDown: Bool) {
         guard self.holdToMuteKeyState.ownsSpace else { return }
         self.holdToMuteKeyState.reconcile(isPhysicallyDown: isPhysicallyDown)
         if !self.holdToMuteKeyState.ownsSpace {
             self.holdToMuteSpaceTap.cancel()
             self.muteRecordingGeneration = nil
-            self.asrService.setDictationMuted(false)
+            if SettingsStore.shared.spaceMuteMode == .hold {
+                self.asrService.setDictationMuted(false)
+            }
         }
     }
 

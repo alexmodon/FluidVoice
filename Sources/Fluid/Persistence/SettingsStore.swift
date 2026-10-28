@@ -1775,6 +1775,16 @@ final class SettingsStore: ObservableObject {
         set { objectWillChange.send(); self.defaults.set(newValue.rawValue, forKey: Keys.hotkeyMode); self.defaults.set(newValue == .hold, forKey: Keys.pressAndHoldMode) }
     }
 
+    var spaceMuteMode: SpaceMuteMode {
+        get { self.defaults.string(forKey: Keys.spaceMuteMode).flatMap(SpaceMuteMode.init(rawValue:)) ?? .hold }
+        set {
+            guard newValue != self.spaceMuteMode else { return }
+            self.objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.spaceMuteMode)
+            NotificationCenter.default.post(name: .init("HoldSpaceToMuteChanged"), object: nil)
+        }
+    }
+
     var holdSpaceToMute: Bool {
         get { self.defaults.bool(forKey: Keys.holdSpaceToMute) }
         set {
@@ -3216,6 +3226,7 @@ final class SettingsStore: ObservableObject {
             pressAndHoldMode: self.pressAndHoldMode,
             hotkeyMode: self.hotkeyMode,
             holdSpaceToMute: self.holdSpaceToMute,
+            spaceMuteMode: self.spaceMuteMode.rawValue,
             enableStreamingPreview: self.enableStreamingPreview,
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
@@ -3340,6 +3351,7 @@ final class SettingsStore: ObservableObject {
         self.shareAnonymousAnalytics = payload.shareAnonymousAnalytics
         self.hotkeyMode = payload.hotkeyMode ?? (payload.pressAndHoldMode ? .hold : .toggle)
         self.holdSpaceToMute = payload.holdSpaceToMute ?? false
+        self.spaceMuteMode = payload.spaceMuteMode.flatMap(SpaceMuteMode.init(rawValue:)) ?? .hold
         self.enableStreamingPreview = payload.enableStreamingPreview
         if let skipSilentRecordingsEnabled = payload.skipSilentRecordingsEnabled {
             self.skipSilentRecordingsEnabled = skipSilentRecordingsEnabled
@@ -5270,6 +5282,7 @@ private extension SettingsStore {
         static let pressAndHoldMode = "PressAndHoldMode"
         static let hotkeyMode = "HotkeyMode"
         static let holdSpaceToMute = "HoldSpaceToMute"
+        static let spaceMuteMode = "SpaceMuteMode"
         static let enableStreamingPreview = "EnableStreamingPreview"
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
